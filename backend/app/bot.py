@@ -19,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    MenuButtonWebApp,
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -60,6 +61,17 @@ def is_admin(telegram_id: int) -> bool:
     return telegram_id in settings.admin_id_set
 
 
+def plain_text(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"[^\w\s']", "", value, flags=re.UNICODE).strip().casefold()
+
+
+def button_is(*labels: str):  # noqa: ANN201
+    normalized = {plain_text(label) for label in labels}
+    return F.text.func(lambda value: plain_text(value) in normalized)
+
+
 def webapp_entry_url() -> str:
     base_url = settings.normalized_webapp_url
     if base_url.endswith("/app"):
@@ -69,12 +81,29 @@ def webapp_entry_url() -> str:
     return f"{base_url}/app/"
 
 
-def main_menu(admin: bool = False, telegram_id: int | None = None) -> ReplyKeyboardMarkup:
+def user_webapp_url(telegram_id: int | None = None) -> str:
     webapp_url = webapp_entry_url()
     if telegram_id:
-        webapp_url = f"{webapp_url}?tg_login={create_webapp_login_token(telegram_id)}"
+        separator = "&" if "?" in webapp_url else "?"
+        webapp_url = f"{webapp_url}{separator}tg_login={create_webapp_login_token(telegram_id)}"
+    return webapp_url
+
+
+async def set_user_menu_button(message: Message) -> None:
+    if not message.from_user:
+        return
+    try:
+        await message.bot.set_chat_menu_button(
+            chat_id=message.chat.id,
+            menu_button=MenuButtonWebApp(text="Testlarni boshlash", web_app=WebAppInfo(url=user_webapp_url(message.from_user.id))),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Telegram menu button sozlanmadi")
+
+
+def main_menu(admin: bool = False, telegram_id: int | None = None) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text="Testlarni boshlash", web_app=WebAppInfo(url=webapp_url))],
+        [KeyboardButton(text="Testlarni boshlash", web_app=WebAppInfo(url=user_webapp_url(telegram_id)))],
         [KeyboardButton(text="Statistika"), KeyboardButton(text="Xatolik haqida xabar")],
         [KeyboardButton(text="Admin bilan aloqa")],
     ]
@@ -107,11 +136,13 @@ def touch_user(telegram_id: int) -> None:
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
+    await set_user_menu_button(message)
     await message.answer("Amal bekor qilindi.", reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id))
 
 
 @router.message(Command("help"))
 async def help_command(message: Message) -> None:
+    await set_user_menu_button(message)
     await message.answer(
         "<b>Yo'riqnoma</b>\n\n"
         "📝 Testlarni boshlash — Mini App'ni ochadi.\n"
@@ -129,6 +160,7 @@ async def start(message: Message, state: FSMContext) -> None:
     user = get_user_by_tg(message.from_user.id)
     if user:
         touch_user(message.from_user.id)
+        await set_user_menu_button(message)
         await state.clear()
         await message.answer(
             f"Assalomu alaykum, <b>{html.escape(user.full_name)}</b>! Test botiga xush kelibsiz.",
@@ -182,14 +214,16 @@ async def registration_phone(message: Message, state: FSMContext) -> None:
         db.add(user)
         db.commit()
     await state.clear()
+    await set_user_menu_button(message)
     await message.answer(
         "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!",
         reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
     )
 
 
-@router.message(F.text == "📊 Statistika")
+@router.message(button_is("Statistika"))
 async def personal_stats(message: Message) -> None:
+    await set_user_menu_button(message)
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.telegram_id == message.from_user.id))
         if not user:
@@ -211,8 +245,9 @@ async def personal_stats(message: Message) -> None:
         )
 
 
-@router.message(F.text == "⚠️ Xatolik haqida xabar")
+@router.message(button_is("Xatolik haqida xabar"))
 async def report_begin(message: Message, state: FSMContext) -> None:
+    await set_user_menu_button(message)
     user = get_user_by_tg(message.from_user.id)
     if not user:
         await message.answer("Avval /start orqali ro'yxatdan o'ting.")
@@ -311,8 +346,9 @@ async def already_fixed(callback: CallbackQuery) -> None:
     await callback.answer("Bu xatolik to'g'irlangan")
 
 
-@router.message(F.text == "👨‍💻 Admin bilan aloqa")
+@router.message(button_is("Admin bilan aloqa"))
 async def contact_admin(message: Message) -> None:
+    await set_user_menu_button(message)
     username = settings.admin_username.lstrip("@")
     if not username:
         await message.answer("Admin username hali sozlanmagan.")
@@ -325,8 +361,9 @@ async def contact_admin(message: Message) -> None:
     )
 
 
-@router.message(F.text == "📈 Batafsil statistika")
+@router.message(button_is("Batafsil statistika"))
 async def detailed_stats(message: Message) -> None:
+    await set_user_menu_button(message)
     if not is_admin(message.from_user.id):
         return
     with SessionLocal() as db:
@@ -351,8 +388,9 @@ async def detailed_stats(message: Message) -> None:
     )
 
 
-@router.message(F.text == "📢 Barchaga xabar")
+@router.message(button_is("Barchaga xabar"))
 async def broadcast_begin(message: Message, state: FSMContext) -> None:
+    await set_user_menu_button(message)
     if not is_admin(message.from_user.id):
         return
     await state.set_state(BroadcastState.waiting_message)
@@ -438,6 +476,15 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     if progress:
         await progress.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetib bormadi: {failed} ta")
+
+
+@router.message(F.text)
+async def unknown_text(message: Message) -> None:
+    await set_user_menu_button(message)
+    if message.from_user and get_user_by_tg(message.from_user.id):
+        await message.answer("Tugmalardan birini tanlang.", reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id))
+        return
+    await message.answer("Avval /start ni bosing va ro'yxatdan o'ting.")
 
 
 async def setup_bot() -> None:
