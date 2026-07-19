@@ -6,6 +6,7 @@ type Question = { id: number; source_id: number; source_name: string; question_t
 type TestRule = { source_id: number; source_name?: string; question_count: number; available_questions?: number };
 type TestItem = { id: number; name: string; time_limit_minutes: number; is_active: boolean; total_questions: number; attempt_count: number; rules: TestRule[] };
 type ParsedQuestion = { question: string; answers: Answer[]; valid: boolean; problems: string[]; duplicate_in_file: boolean; duplicate_in_database: boolean; source_name?: string | null };
+type ErrorReport = { id: number; status: string; message_text: string | null; created_at: string; fixed_at: string | null; attempt_id: number | null; question_id: number | null; question_text: string | null; source_name: string | null; answers: Answer[]; question: Question | null; user: { full_name: string | null; telegram_id: number | null; phone: string | null; username: string | null } };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
@@ -55,6 +56,7 @@ function showShell(): void {
     <a href="#sources" data-nav="sources">📚 <span>Manbalar</span></a>
     <a href="#search" data-nav="search">🔍 <span>Qidiruv</span></a>
     <a href="#tests" data-nav="tests">📝 <span>Testlar</span></a>
+    <a href="#reports" data-nav="reports">⚠️ <span>Xatoliklar</span></a>
     <a href="#import" data-nav="import">📥 <span>Import</span></a>
   </nav><button class="logout" id="logout">🚪 Chiqish</button></aside><div class="main"><header class="topbar"><button class="menu" id="menu">☰</button><div><strong id="page-title">Bosh sahifa</strong><span id="page-subtitle">Tizim holati</span></div><a class="open-app" href="/app/" target="_blank">Mini App ↗</a></header><section id="content" class="content"></section></div></div>`;
   document.querySelector('#logout')?.addEventListener('click', logout);
@@ -78,6 +80,7 @@ async function route(): Promise<void> {
     case 'sources': return showSources();
     case 'search': return showSearch();
     case 'tests': return showTests();
+    case 'reports': return showReports();
     case 'import': return showImport();
     default: return showDashboard();
   }
@@ -200,6 +203,66 @@ async function showSearch(): Promise<void> {
   document.querySelector('#global-q')?.addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = window.setTimeout(run, 300); }); document.querySelector('#global-source')?.addEventListener('change', run);
 }
 
+async function showReports(status = 'open', page = 1): Promise<void> {
+  setTitle('Xatoliklar', 'Foydalanuvchilar yuborgan savol muammolari');
+  loading();
+  try {
+    const data = await api<any>(`/api/admin/reports?status=${encodeURIComponent(status)}&page=${page}`);
+    document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><h2>Xatoliklar</h2><span>${data.total} ta xabar</span></div><div class="toolbar"><button class="secondary compact" data-report-status="open">Ochiq</button><button class="secondary compact" data-report-status="fixed">Yopilgan</button><button class="secondary compact" data-report-status="all">Hammasi</button></div></div><div class="report-list">${data.items.map((report: ErrorReport) => reportCard(report)).join('') || '<div class="empty-block">Xatolik xabari yo‘q</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-report-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-report-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
+    document.querySelectorAll<HTMLElement>('[data-report-status]').forEach(button => button.addEventListener('click', () => showReports(button.dataset.reportStatus || 'open', 1)));
+    document.querySelector('#prev-report-page')?.addEventListener('click', () => showReports(status, page - 1));
+    document.querySelector('#next-report-page')?.addEventListener('click', () => showReports(status, page + 1));
+    bindReportActions(() => showReports(status, page));
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function reportCard(report: ErrorReport): string {
+  const answers = report.answers?.length ? report.answers.map(answer => `<div class="answer-row ${answer.correct ? 'correct' : ''}">${answer.correct ? '✓' : '•'} ${esc(answer.text)}</div>`).join('') : '<div class="answer-row">Javob variantlari saqlanmagan</div>';
+  return `<article class="report-card ${report.status === 'fixed' ? 'fixed' : ''}"><div class="report-head"><div><span class="status ${report.status === 'fixed' ? 'active' : 'inactive'}">${report.status === 'fixed' ? 'Yopilgan' : 'Ochiq'}</span><h3>${esc(report.question_text || 'Savol o‘chirilgan')}</h3><small>${esc(report.source_name || 'Manba noma’lum')} · ${new Date(report.created_at).toLocaleString('uz-UZ')}</small></div><div class="actions">${report.question ? `<button data-edit-report-question="${report.question_id}">✏️</button><button class="danger-icon" data-delete-report-question="${report.question_id}">🗑</button>` : ''}<button data-fix-report="${report.id}" ${report.status === 'fixed' ? 'disabled' : ''}>✓</button><button class="danger-icon" data-delete-report="${report.id}">×</button></div></div><div class="report-meta"><strong>${esc(report.user.full_name || 'Foydalanuvchi')}</strong><span>${report.user.phone ? esc(report.user.phone) : ''}${report.user.username ? ` · @${esc(report.user.username)}` : ''}${report.user.telegram_id ? ` · ID ${report.user.telegram_id}` : ''}</span></div><blockquote>${esc(report.message_text || 'Izoh yozilmagan')}</blockquote><details><summary>Javob variantlari</summary>${answers}</details></article>`;
+}
+
+function bindReportActions(refresh: () => void): void {
+  document.querySelectorAll<HTMLElement>('[data-edit-report-question]').forEach(button => button.addEventListener('click', async () => {
+    try {
+      const question = await api<Question>(`/api/admin/questions/${button.dataset.editReportQuestion}`);
+      questionModal(question, question.source_id, refresh);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
+  }));
+  document.querySelectorAll<HTMLElement>('[data-delete-report-question]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Savol manba ichidan ham o‘chirilsinmi?')) return;
+    try {
+      await api(`/api/admin/questions/${button.dataset.deleteReportQuestion}`, { method: 'DELETE' });
+      toast('Savol o‘chirildi');
+      refresh();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
+  }));
+  document.querySelectorAll<HTMLElement>('[data-fix-report]').forEach(button => button.addEventListener('click', async () => {
+    try {
+      await api(`/api/admin/reports/${button.dataset.fixReport}/status`, { method: 'PUT', body: JSON.stringify({ status: 'fixed' }) });
+      toast('Xatolik yopildi');
+      refresh();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
+  }));
+  document.querySelectorAll<HTMLElement>('[data-delete-report]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Xatolik xabari ro‘yxatdan o‘chirilsinmi?')) return;
+    try {
+      await api(`/api/admin/reports/${button.dataset.deleteReport}`, { method: 'DELETE' });
+      toast('Xabar o‘chirildi');
+      refresh();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
+  }));
+}
+
 async function showTests(): Promise<void> {
   setTitle('Testlar', 'Test qoidalari va faolligi'); loading();
   try { const tests = await api<TestItem[]>('/api/admin/tests'); if (!sourceCache.length) await loadSources(); document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><h2>Testlar</h2><span>${tests.length} ta</span></div><button class="primary compact" id="new-test">+ Yangi test</button></div><div class="table-wrap"><table><thead><tr><th>Nomi</th><th>Savollar</th><th>Vaqt</th><th>Holati</th><th>Ishlangan</th><th>Amallar</th></tr></thead><tbody>${tests.map(t => `<tr><td><strong>${esc(t.name)}</strong><small class="block">${t.rules.map(r => `${esc(r.source_name)}: ${r.question_count}`).join(' · ')}</small></td><td>${t.total_questions}</td><td>${t.time_limit_minutes ? `${t.time_limit_minutes} daq.` : 'Cheksiz'}</td><td><span class="status ${t.is_active ? 'active' : 'inactive'}">${t.is_active ? 'Faol' : 'Nofaol'}</span></td><td>${t.attempt_count}</td><td class="actions"><button data-edit-test="${t.id}">✏️</button><button class="danger-icon" data-delete-test="${t.id}">🗑</button></td></tr>`).join('') || '<tr><td colspan="6" class="empty-cell">Test mavjud emas</td></tr>'}</tbody></table></div></section>`;
@@ -278,5 +341,6 @@ function closeModal(): void { modalRoot.innerHTML = ''; }
 function showError(error: unknown, selector = '#content'): void { const message = error instanceof Error ? error.message : String(error); document.querySelector(selector)!.innerHTML = `<div class="error-box"><strong>⚠️ Xatolik</strong><p>${esc(message)}</p><button class="ghost compact" onclick="location.reload()">Qayta yuklash</button></div>`; }
 
 if (token) showShell(); else showLogin();
+
 
 
