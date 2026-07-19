@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: telegram-test-miniapp
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: WEBAPP_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_USERNAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: TRUSTED_HOSTS
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DEBUG
+        value: "false"
+      - key: ENABLE_DEV_AUTH
+        value: "false"

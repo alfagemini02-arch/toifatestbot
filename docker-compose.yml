@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: testbot
+      POSTGRES_USER: testbot
+      POSTGRES_PASSWORD: testbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testbot -d testbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://testbot:testbot@db:5432/testbot
+      WEBAPP_URL: http://localhost:10000
+      ALLOWED_ORIGINS: http://localhost:10000
+      TRUSTED_HOSTS: localhost,127.0.0.1
+    ports:
+      - "10000:10000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
