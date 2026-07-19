@@ -11,7 +11,7 @@ from .config import get_settings
 from .database import get_db
 from .models import Admin, User
 from .schemas import AdminLoginRequest, DevAuthRequest, TelegramAuthRequest
-from .security import create_access_token, validate_telegram_init_data, verify_password
+from .security import create_access_token, validate_telegram_init_data, validate_webapp_login_token, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 settings = get_settings()
@@ -29,9 +29,15 @@ def _check_login_throttle(key: str) -> None:
 
 @router.post("/telegram")
 def telegram_auth(payload: TelegramAuthRequest, db: Session = Depends(get_db)) -> dict:
-    data = validate_telegram_init_data(payload.init_data)
-    tg_user = data.get("user") or {}
-    telegram_id = tg_user.get("id")
+    tg_user = {}
+    if payload.init_data:
+        data = validate_telegram_init_data(payload.init_data)
+        tg_user = data.get("user") or {}
+        telegram_id = tg_user.get("id")
+    elif payload.webapp_token:
+        telegram_id = validate_webapp_login_token(payload.webapp_token)
+    else:
+        telegram_id = None
     if not telegram_id:
         raise HTTPException(status_code=401, detail="Telegram foydalanuvchisi aniqlanmadi")
     user = db.scalar(select(User).where(User.telegram_id == int(telegram_id)))

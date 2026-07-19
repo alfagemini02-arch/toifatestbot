@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     access_token_minutes: int = 1440
     admin_token_hours: int = 8
     telegram_auth_max_age_seconds: int = 86400
+    webapp_login_token_hours: int = 168
 
     database_url: str = "sqlite:///./data/app.db"
     bootstrap_admin_username: str = "admin"

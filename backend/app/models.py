@@ -151,7 +151,12 @@ class ErrorReport(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    question_id: Mapped[int | None] = mapped_column(ForeignKey("source_questions.id", ondelete="SET NULL"), index=True)
+    attempt_id: Mapped[int | None] = mapped_column(ForeignKey("attempts.id", ondelete="SET NULL"), index=True)
     message_text: Mapped[str | None] = mapped_column(Text)
+    question_text_snapshot: Mapped[str | None] = mapped_column(Text)
+    source_name_snapshot: Mapped[str | None] = mapped_column(String(255))
+    answers_snapshot: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     telegram_msg_id: Mapped[int | None] = mapped_column(BigInteger)
     admin_msg_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="open", index=True, nullable=False)

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class TelegramAuthRequest(BaseModel):
     init_data: str = ""
+    webapp_token: str = ""
 
 
 class DevAuthRequest(BaseModel):
@@ -88,6 +89,15 @@ class AttemptCreate(BaseModel):
 class AnswerSubmit(BaseModel):
     question_id: int
     answer_id: int
+
+
+class QuestionReportInput(BaseModel):
+    message: Annotated[str, Field(min_length=3, max_length=2000)]
+    attempt_id: int | None = None
+
+
+class ReportStatusUpdate(BaseModel):
+    status: Annotated[str, Field(pattern="^(open|fixed)$")]
 
 
 class ImportAnswer(BaseModel):

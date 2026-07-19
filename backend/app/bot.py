@@ -30,6 +30,7 @@ from sqlalchemy import select
 from .config import get_settings
 from .database import SessionLocal
 from .models import Broadcast, ErrorReport, User, utcnow
+from .security import create_webapp_login_token
 from .services import admin_dashboard_stats, user_stats
 
 logger = logging.getLogger(__name__)
@@ -59,14 +60,26 @@ def is_admin(telegram_id: int) -> bool:
     return telegram_id in settings.admin_id_set
 
 
-def main_menu(admin: bool = False) -> ReplyKeyboardMarkup:
+def webapp_entry_url() -> str:
+    base_url = settings.normalized_webapp_url
+    if base_url.endswith("/app"):
+        return f"{base_url}/"
+    if base_url.endswith("/app/"):
+        return base_url
+    return f"{base_url}/app/"
+
+
+def main_menu(admin: bool = False, telegram_id: int | None = None) -> ReplyKeyboardMarkup:
+    webapp_url = webapp_entry_url()
+    if telegram_id:
+        webapp_url = f"{webapp_url}?tg_login={create_webapp_login_token(telegram_id)}"
     rows = [
-        [KeyboardButton(text="📝 Testlarni boshlash", web_app=WebAppInfo(url=f"{settings.normalized_webapp_url}/app"))],
-        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="⚠️ Xatolik haqida xabar")],
-        [KeyboardButton(text="👨‍💻 Admin bilan aloqa")],
+        [KeyboardButton(text="Testlarni boshlash", web_app=WebAppInfo(url=webapp_url))],
+        [KeyboardButton(text="Statistika"), KeyboardButton(text="Xatolik haqida xabar")],
+        [KeyboardButton(text="Admin bilan aloqa")],
     ]
     if admin:
-        rows.append([KeyboardButton(text="📈 Batafsil statistika"), KeyboardButton(text="📢 Barchaga xabar")])
+        rows.append([KeyboardButton(text="Batafsil statistika"), KeyboardButton(text="Barchaga xabar")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder="Kerakli bo'limni tanlang")
 
 
@@ -94,7 +107,7 @@ def touch_user(telegram_id: int) -> None:
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Amal bekor qilindi.", reply_markup=main_menu(is_admin(message.from_user.id)))
+    await message.answer("Amal bekor qilindi.", reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id))
 
 
 @router.message(Command("help"))
@@ -105,7 +118,7 @@ async def help_command(message: Message) -> None:
         "📊 Statistika — shaxsiy natijalaringiz.\n"
         "⚠️ Xatolik haqida xabar — screenshot yoki izohni adminga yuboradi.\n"
         "/cancel — joriy amalni bekor qiladi.",
-        reply_markup=main_menu(is_admin(message.from_user.id)),
+        reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
     )
 
 
@@ -119,7 +132,7 @@ async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(
             f"Assalomu alaykum, <b>{html.escape(user.full_name)}</b>! Test botiga xush kelibsiz.",
-            reply_markup=main_menu(is_admin(message.from_user.id)),
+            reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
         )
         return
     await state.set_state(Registration.waiting_name)
@@ -171,7 +184,7 @@ async def registration_phone(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!",
-        reply_markup=main_menu(is_admin(message.from_user.id)),
+        reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
     )
 
 
@@ -256,7 +269,7 @@ async def report_receive(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "✅ Xabaringiz adminga yuborildi. Xatolik to'g'irlangach sizga xabar beramiz!",
-        reply_markup=main_menu(is_admin(message.from_user.id)),
+        reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
     )
 
 

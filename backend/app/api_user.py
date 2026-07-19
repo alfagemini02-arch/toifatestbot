@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import get_db
 from .deps import enforce_rate_limit, get_current_user
-from .models import Attempt, Question, Source, Test, TestRule, User
-from .schemas import AnswerSubmit, AttemptCreate
+from .models import Attempt, AttemptQuestion, ErrorReport, Question, Source, Test, TestRule, User
+from .schemas import AnswerSubmit, AttemptCreate, QuestionReportInput
 from .services import (
     auto_finish_if_expired,
     create_attempt,
@@ -95,6 +95,52 @@ def answer_question(
 ) -> dict:
     attempt = get_attempt(db, attempt_id, user.id)
     return submit_answer(db, attempt, payload.question_id, payload.answer_id)
+
+
+@router.post("/questions/{question_id}/reports", status_code=201)
+def report_question(
+    question_id: int,
+    payload: QuestionReportInput,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    question = db.scalar(
+        select(Question)
+        .options(selectinload(Question.answers), selectinload(Question.source))
+        .where(Question.id == question_id)
+    )
+    if not question:
+        raise HTTPException(status_code=404, detail="Savol topilmadi")
+
+    if payload.attempt_id:
+        attempt_question = db.scalar(
+            select(AttemptQuestion)
+            .join(Attempt, Attempt.id == AttemptQuestion.attempt_id)
+            .where(
+                Attempt.id == payload.attempt_id,
+                Attempt.user_id == user.id,
+                AttemptQuestion.question_id == question.id,
+            )
+        )
+        if not attempt_question:
+            raise HTTPException(status_code=403, detail="Bu savol ushbu foydalanuvchi testiga tegishli emas")
+
+    report = ErrorReport(
+        user_id=user.id,
+        question_id=question.id,
+        attempt_id=payload.attempt_id,
+        message_text=payload.message.strip(),
+        question_text_snapshot=question.question_text,
+        source_name_snapshot=question.source.name if question.source else None,
+        answers_snapshot=[
+            {"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct, "position": answer.position}
+            for answer in question.answers
+        ],
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {"id": report.id, "status": report.status}
 
 
 @router.post("/attempts/{attempt_id}/finish")

@@ -12,8 +12,8 @@ from .config import get_settings
 from .database import get_db
 from .deps import get_current_admin
 from .importers import ParsedQuestion, parse_uploaded_file
-from .models import Answer, Attempt, Question, Source, Test, TestRule
-from .schemas import ImportCommitRequest, QuestionInput, QuestionMoveRequest, SourceCreate, SourceUpdate, TestInput
+from .models import Answer, Attempt, ErrorReport, Question, Source, Test, TestRule, utcnow
+from .schemas import ImportCommitRequest, QuestionInput, QuestionMoveRequest, ReportStatusUpdate, SourceCreate, SourceUpdate, TestInput
 from .services import admin_dashboard_stats, serialize_question, serialize_test
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
@@ -53,9 +53,90 @@ def _test_or_404(db: Session, test_id: int) -> Test:
     return test
 
 
+def _report_or_404(db: Session, report_id: int) -> ErrorReport:
+    report = db.scalar(select(ErrorReport).options(selectinload(ErrorReport.user)).where(ErrorReport.id == report_id))
+    if not report:
+        raise HTTPException(status_code=404, detail="Xatolik xabari topilmadi")
+    return report
+
+
+def _serialize_report(db: Session, report: ErrorReport) -> dict:
+    question_payload = None
+    if report.question_id:
+        question = db.scalar(
+            select(Question)
+            .options(selectinload(Question.answers), selectinload(Question.source))
+            .where(Question.id == report.question_id)
+        )
+        if question:
+            question_payload = serialize_question(question)
+    return {
+        "id": report.id,
+        "status": report.status,
+        "message_text": report.message_text,
+        "created_at": report.created_at.isoformat(),
+        "fixed_at": report.fixed_at.isoformat() if report.fixed_at else None,
+        "attempt_id": report.attempt_id,
+        "question_id": report.question_id,
+        "question_text": question_payload["question_text"] if question_payload else report.question_text_snapshot,
+        "source_name": question_payload["source_name"] if question_payload else report.source_name_snapshot,
+        "answers": question_payload["answers"] if question_payload else (report.answers_snapshot or []),
+        "question": question_payload,
+        "user": {
+            "id": report.user.id if report.user else None,
+            "full_name": report.user.full_name if report.user else None,
+            "telegram_id": report.user.telegram_id if report.user else None,
+            "phone": report.user.phone if report.user else None,
+            "username": report.user.username if report.user else None,
+        },
+    }
+
+
 @router.get("/stats")
 def stats(db: Session = Depends(get_db)) -> dict:
     return admin_dashboard_stats(db)
+
+
+@router.get("/reports")
+def list_reports(
+    status: str = "open",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 30,
+    db: Session = Depends(get_db),
+) -> dict:
+    query = select(ErrorReport).options(selectinload(ErrorReport.user))
+    count_query = select(func.count(ErrorReport.id))
+    if status != "all":
+        query = query.where(ErrorReport.status == status)
+        count_query = count_query.where(ErrorReport.status == status)
+    total = db.scalar(count_query) or 0
+    reports = list(
+        db.scalars(query.order_by(ErrorReport.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
+    )
+    return {
+        "items": [_serialize_report(db, report) for report in reports],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+@router.put("/reports/{report_id}/status")
+def update_report_status(report_id: int, payload: ReportStatusUpdate, db: Session = Depends(get_db)) -> dict:
+    report = _report_or_404(db, report_id)
+    report.status = payload.status
+    report.fixed_at = utcnow() if payload.status == "fixed" else None
+    db.commit()
+    return _serialize_report(db, report)
+
+
+@router.delete("/reports/{report_id}")
+def delete_report(report_id: int, db: Session = Depends(get_db)) -> dict:
+    report = _report_or_404(db, report_id)
+    db.delete(report)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.get("/sources")

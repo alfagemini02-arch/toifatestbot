@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
 from .config import get_settings
 from .database import Base, SessionLocal, engine
@@ -10,8 +10,29 @@ from .security import hash_password
 settings = get_settings()
 
 
+def _run_lightweight_migrations() -> None:
+    inspector = inspect(engine)
+    if "error_reports" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("error_reports")}
+    json_type = "JSON" if engine.dialect.name != "sqlite" else "TEXT"
+    additions = {
+        "question_id": "INTEGER",
+        "attempt_id": "INTEGER",
+        "question_text_snapshot": "TEXT",
+        "source_name_snapshot": "VARCHAR(255)",
+        "answers_snapshot": json_type,
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in additions.items():
+            if column_name not in existing:
+                connection.execute(text(f"ALTER TABLE error_reports ADD COLUMN {column_name} {column_type}"))
+
+
 def initialize_database() -> None:
     Base.metadata.create_all(bind=engine)
+    _run_lightweight_migrations()
     with SessionLocal() as db:
         admin = db.scalar(select(Admin).where(Admin.username == settings.bootstrap_admin_username))
         if not admin and settings.bootstrap_admin_username and settings.bootstrap_admin_password:

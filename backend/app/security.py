@@ -36,6 +36,19 @@ def create_access_token(subject: str, role: str, expires_delta: timedelta) -> st
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
 
 
+def create_webapp_login_token(telegram_id: int, expires_delta: timedelta | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    expires = expires_delta or timedelta(hours=settings.webapp_login_token_hours)
+    payload = {
+        "sub": str(telegram_id),
+        "telegram_id": telegram_id,
+        "role": "webapp-login",
+        "iat": int(now.timestamp()),
+        "exp": int((now + expires).timestamp()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
 def decode_access_token(token: str, expected_role: str | None = None) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
@@ -44,6 +57,14 @@ def decode_access_token(token: str, expected_role: str | None = None) -> dict[st
     if expected_role and payload.get("role") != expected_role:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ruxsat yetarli emas")
     return payload
+
+
+def validate_webapp_login_token(token: str) -> int:
+    payload = decode_access_token(token, expected_role="webapp-login")
+    try:
+        return int(payload.get("telegram_id") or payload["sub"])
+    except (TypeError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Mini App login tokeni yaroqsiz") from exc
 
 
 def validate_telegram_init_data(init_data: str, max_age_seconds: int | None = None) -> dict[str, Any]:
