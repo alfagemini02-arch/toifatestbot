@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.security import create_webapp_login_token
 
 
 def auth_header(token: str) -> dict[str, str]:
@@ -75,6 +76,9 @@ def test_admin_and_user_api_flow() -> None:
         assert dev_login.status_code == 200, dev_login.text
         user_headers = auth_header(dev_login.json()['access_token'])
 
+        webapp_login = client.post('/api/auth/telegram', json={'webapp_token': create_webapp_login_token(999000111)})
+        assert webapp_login.status_code == 200, webapp_login.text
+
         tests = client.get('/api/tests', headers=user_headers)
         assert tests.status_code == 200, tests.text
         assert any(item['id'] == test_id for item in tests.json())
@@ -94,6 +98,26 @@ def test_admin_and_user_api_flow() -> None:
         )
         assert answer_response.status_code == 200, answer_response.text
         assert answer_response.json()['is_correct'] is True
+
+        report_response = client.post(
+            f"/api/questions/{question['question_id']}/reports",
+            headers=user_headers,
+            json={'message': "Javobda xatolik bor", 'attempt_id': attempt['id']},
+        )
+        assert report_response.status_code == 201, report_response.text
+
+        reports = client.get('/api/admin/reports', headers=admin_headers)
+        assert reports.status_code == 200, reports.text
+        assert reports.json()['total'] == 1
+        assert reports.json()['items'][0]['question_id'] == question['question_id']
+
+        close_report = client.put(
+            f"/api/admin/reports/{reports.json()['items'][0]['id']}/status",
+            headers=admin_headers,
+            json={'status': 'fixed'},
+        )
+        assert close_report.status_code == 200, close_report.text
+        assert close_report.json()['status'] == 'fixed'
 
         finish = client.post(f"/api/attempts/{attempt['id']}/finish", headers=user_headers)
         assert finish.status_code == 200, finish.text
