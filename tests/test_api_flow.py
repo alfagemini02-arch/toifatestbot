@@ -33,6 +33,30 @@ def test_admin_and_user_api_flow() -> None:
             },
         )
         assert question_response.status_code == 201, question_response.text
+        question_id = question_response.json()['id']
+
+        target_source_response = client.post('/api/admin/sources', headers=admin_headers, json={'name': 'Ikkinchi manba'})
+        assert target_source_response.status_code == 201, target_source_response.text
+        target_source_id = target_source_response.json()['id']
+
+        move_response = client.post(
+            '/api/admin/questions/move',
+            headers=admin_headers,
+            json={'question_ids': [question_id], 'target_source_id': target_source_id},
+        )
+        assert move_response.status_code == 200, move_response.text
+        assert move_response.json()['moved'] == 1
+
+        moved_questions = client.get(f'/api/admin/sources/{target_source_id}/questions', headers=admin_headers)
+        assert moved_questions.status_code == 200, moved_questions.text
+        assert any(item['id'] == question_id for item in moved_questions.json()['items'])
+
+        move_back_response = client.post(
+            '/api/admin/questions/move',
+            headers=admin_headers,
+            json={'question_ids': [question_id], 'target_source_id': source_id},
+        )
+        assert move_back_response.status_code == 200, move_back_response.text
 
         test_response = client.post(
             '/api/admin/tests',
