@@ -1,0 +1,1312 @@
+================================================================================
+        TELEGRAM TEST BOT + WEB APP TIZIMI
+        TO'LIQ TEXNIK HUJJAT (TEXNIK TOPSHIRIQ / SPETSIFIKATSIYA)
+================================================================================
+Versiya: 1.0
+Sana: 2026-yil
+Til: O'zbek (kirill va lotin alifbosidagi kontentni qo'llab-quvvatlaydi)
+
+================================================================================
+MUNDARIJA
+================================================================================
+1.  Loyiha haqida umumiy ma'lumot
+2.  Texnologiyalar steki (Tech Stack)
+3.  Loyiha papka strukturasi
+4.  Ma'lumotlar bazasi (Database) sxemasi
+5.  Telegram Bot — to'liq funksionallik va oqimlar (flow)
+6.  Web App — foydalanuvchi (test ishlash) qismi
+7.  Web App — Admin panel
+8.  Import tizimi (.txt, .docx, .db) — parsing algoritmlari
+9.  Qidiruv va tahrirlash tizimi (Manbalar bo'limi)
+10. Random savol tanlash algoritmi
+11. Backend API — endpointlar ro'yxati
+12. Xatolik haqida xabar berish tizimi (Bug Report)
+13. Statistika tizimi
+14. Broadcast (barcha foydalanuvchilarga xabar yuborish)
+15. UI/UX dizayn tizimi (Design System)
+16. Xavfsizlik
+17. Deploy (serverga joylashtirish)
+18. Kelajakda qo'shish mumkin bo'lgan funksiyalar
+19. Ishlab chiqish bosqichlari (Roadmap)
+
+================================================================================
+1. LOYIHA HAQIDA UMUMIY MA'LUMOT
+================================================================================
+
+Tizim 3 ta asosiy qismdan iborat:
+
+  [1] TELEGRAM BOT (Python) — foydalanuvchilarni ro'yxatdan o'tkazish,
+      Web App'ga kirish tugmasi, statistika, xatolik haqida xabar berish,
+      admin bilan aloqa, admin uchun boshqaruv tugmalari.
+
+  [2] WEB APP — FOYDALANUVCHI QISMI (TypeScript + HTML + CSS + JS) —
+      Telegram Mini App sifatida ochiladi. Foydalanuvchi testlarni ko'radi,
+      tanlaydi, ishlaydi va natijasini ko'radi. ASOSAN TELEFON EKRANIGA
+      moslashtirilgan, lekin planshet va kompyuterda ham to'g'ri ishlaydi
+      (responsive).
+
+  [3] WEB APP — ADMIN PANEL (TypeScript + HTML + CSS + JS) —
+      Brauzerda ochiladi (login/parol bilan). Manbalar (bazalar) yaratish,
+      savollarni import qilish, tahrirlash, qidirish, testlar tuzish.
+      ASOSAN KOMPYUTER EKRANIGA moslashtirilgan, lekin telefonda ham
+      ishlatish mumkin (responsive).
+
+  [4] BACKEND (Python) — barcha qismlarni birlashtiruvchi API server +
+      Telegram bot bir xil ma'lumotlar bazasi bilan ishlaydi.
+
+ASOSIY G'OYA:
+  - Admin "manba" (baza) yaratadi: masalan "Geometriya", "Arifmetika".
+  - Har bir manba ichiga savollar qo'shiladi (qo'lda yoki import orqali).
+  - Admin "test" yaratadi va unga qoidalar belgilaydi:
+      "Geometriya manbasidan 10 ta savol + Arifmetika manbasidan 3 ta savol"
+  - Foydalanuvchi testni boshlaganida har safar RANDOM savollar tushadi,
+    bitta urinish ichida savollar TAKRORLANMAYDI.
+  - Test tugagach chiroyli natija sahifasi ko'rsatiladi.
+
+================================================================================
+2. TEXNOLOGIYALAR STEKI (TECH STACK)
+================================================================================
+
+BACKEND:
+  - Python 3.11+
+  - FastAPI            — REST API server (tez, zamonaviy, async)
+  - Uvicorn            — ASGI server
+  - aiogram 3.x        — Telegram bot framework (async, zamonaviy)
+    (muqobil: python-telegram-bot 21.x — lekin aiogram tavsiya etiladi)
+  - SQLite             — ma'lumotlar bazasi (boshlash uchun yetarli;
+                         keyinchalik PostgreSQL'ga o'tish oson bo'lishi
+                         uchun SQLAlchemy ORM ishlatiladi)
+  - SQLAlchemy 2.x     — ORM (baza bilan ishlash)
+  - Alembic            — baza migratsiyalari
+  - python-docx        — .docx fayllarni o'qish (import uchun)
+  - Pydantic v2        — ma'lumotlarni validatsiya qilish
+  - APScheduler        — kunlik statistika hisoblash (agar kerak bo'lsa)
+
+FRONTEND (ikkala qism ham):
+  - TypeScript 5.x
+  - HTML5 + CSS3 (CSS Variables, Flexbox, Grid)
+  - Vite               — build tool (tez, zamonaviy)
+  - Telegram Web App JS SDK (telegram-web-app.js) — faqat foydalanuvchi
+    qismida (initData, tema ranglari, haptic feedback, BackButton, 
+    MainButton)
+  - Framework ishlatmaslik ham mumkin (vanilla TS), lekin murakkablikni
+    kamaytirish uchun engil kutubxonalar (masalan, faqat DOM helper)
+    ishlatish tavsiya etiladi. Agar xohlansa React/Vue ham mumkin, lekin
+    talab bo'yicha TS+HTML+CSS+JS yetarli.
+
+INFRA:
+  - Nginx              — reverse proxy + statik fayllar
+  - HTTPS (Let's Encrypt) — Telegram Web App uchun MAJBURIY (faqat https)
+  - systemd / Docker   — servislarni ishga tushirish
+
+================================================================================
+3. LOYIHA PAPKA STRUKTURASI
+================================================================================
+
+test-bot/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                 # FastAPI ilovasi kirish nuqtasi
+│   │   ├── config.py               # sozlamalar (.env dan o'qiydi)
+│   │   ├── database.py             # SQLAlchemy engine, session
+│   │   ├── models/                 # ORM modellari
+│   │   │   ├── user.py
+│   │   │   ├── source.py           # manbalar
+│   │   │   ├── question.py         # savollar + javoblar
+│   │   │   ├── test.py             # testlar + config
+│   │   │   ├── attempt.py          # urinishlar (test ishlash sessiyalari)
+│   │   │   └── report.py           # xatolik xabarlari
+│   │   ├── schemas/                # Pydantic sxemalar (request/response)
+│   │   ├── api/
+│   │   │   ├── auth.py             # Telegram initData tekshirish + admin login
+│   │   │   ├── tests.py            # foydalanuvchi test API
+│   │   │   ├── admin_sources.py    # manbalar CRUD
+│   │   │   ├── admin_questions.py  # savollar CRUD + qidiruv
+│   │   │   ├── admin_tests.py      # test tuzish CRUD
+│   │   │   ├── admin_import.py     # fayl import
+│   │   │   └── admin_stats.py      # statistika
+│   │   ├── services/
+│   │   │   ├── importer/
+│   │   │   │   ├── docx_parser.py  # .docx parser
+│   │   │   │   ├── txt_parser.py   # .txt parser
+│   │   │   │   ├── db_parser.py    # .db (SQLite) parser
+│   │   │   │   └── normalizer.py   # umumiy tozalash/normalizatsiya
+│   │   │   ├── random_picker.py    # random savol tanlash
+│   │   │   └── stats_service.py
+│   │   └── utils/
+│   ├── alembic/                    # migratsiyalar
+│   ├── requirements.txt
+│   └── .env                        # BOT_TOKEN, ADMIN_IDS, SECRET_KEY...
+│
+├── bot/
+│   ├── bot.py                      # aiogram kirish nuqtasi
+│   ├── handlers/
+│   │   ├── start.py                # /start, ro'yxatdan o'tish
+│   │   ├── menu.py                 # asosiy menyu tugmalari
+│   │   ├── report.py               # xatolik haqida xabar berish oqimi
+│   │   ├── admin.py                # admin: statistika, broadcast,
+│   │   │                           #        "Xatolik to'g'irlandi" tugmasi
+│   │   └── contact.py              # admin bilan aloqa
+│   ├── keyboards/
+│   │   ├── user_kb.py              # foydalanuvchi klaviaturalari
+│   │   └── admin_kb.py             # admin klaviaturalari
+│   ├── states.py                   # FSM holatlari (ro'yxat, report, broadcast)
+│   └── middlewares/
+│       └── user_check.py           # foydalanuvchi bazada bormi tekshirish
+│
+├── frontend-user/                  # Test ishlash Mini App
+│   ├── index.html
+│   ├── src/
+│   │   ├── main.ts
+│   │   ├── api.ts                  # backend bilan aloqa
+│   │   ├── telegram.ts             # WebApp SDK wrapper
+│   │   ├── pages/
+│   │   │   ├── testList.ts         # testlar ro'yxati
+│   │   │   ├── testRun.ts          # test ishlash ekrani
+│   │   │   └── result.ts           # natija ekrani
+│   │   ├── components/
+│   │   │   ├── questionNav.ts      # yumaloq savol raqamlari paneli
+│   │   │   ├── questionCard.ts     # savol + variantlar kartasi
+│   │   │   └── finishModal.ts      # "Yakunlashni tasdiqlaysizmi?" modal
+│   │   └── styles/
+│   │       ├── variables.css       # ranglar, o'lchamlar
+│   │       ├── base.css
+│   │       └── pages.css
+│   └── vite.config.ts
+│
+├── frontend-admin/                 # Admin panel
+│   ├── index.html
+│   ├── src/
+│   │   ├── main.ts
+│   │   ├── api.ts
+│   │   ├── auth.ts                 # login sahifasi + token saqlash
+│   │   ├── pages/
+│   │   │   ├── dashboard.ts        # umumiy ko'rinish + statistika
+│   │   │   ├── sources.ts          # manbalar ro'yxati
+│   │   │   ├── sourceDetail.ts     # manba ichi: savollar, qidiruv, CRUD
+│   │   │   ├── globalSearch.ts     # BARCHA manbalar bo'ylab qidiruv
+│   │   │   ├── import.ts           # fayl import sahifasi + preview
+│   │   │   ├── tests.ts            # testlar ro'yxati
+│   │   │   └── testBuilder.ts      # test tuzish (manba+savollar soni)
+│   │   ├── components/
+│   │   │   ├── modal.ts            # umumiy modal oyna
+│   │   │   ├── questionEditModal.ts# savolni tahrirlash modali
+│   │   │   ├── confirmDialog.ts    # o'chirishni tasdiqlash
+│   │   │   ├── toast.ts            # bildirishnomalar
+│   │   │   └── table.ts
+│   │   └── styles/
+│   └── vite.config.ts
+│
+└── nginx/
+    └── site.conf
+
+================================================================================
+4. MA'LUMOTLAR BAZASI (DATABASE) SXEMASI
+================================================================================
+
+Eslatma: Sizning eski .db fayllaringiz (tests.db, YANGI_DASTURGA_2024_BAZA.db)
+strukturasi o'rganildi. Yangi sxema unga MOS (import qilish oson bo'ladi),
+lekin kengaytirilgan.
+
+-- FOYDALANUVCHILAR (Telegram orqali ro'yxatdan o'tganlar)
+CREATE TABLE users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id     BIGINT UNIQUE NOT NULL,        -- Telegram user ID
+    full_name       TEXT NOT NULL,                 -- foydalanuvchi kiritgan ism
+    phone           TEXT NOT NULL,                 -- kontakt orqali yuborilgan
+    username        TEXT,                          -- @username (bo'lsa)
+    registered_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_active_at  TIMESTAMP,                     -- statistika uchun
+    is_blocked      INTEGER DEFAULT 0              -- botni bloklaganlar
+);
+
+-- ADMINLAR (admin panel uchun login)
+CREATE TABLE admins (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL                  -- pbkdf2:sha256 (eski db kabi)
+);
+
+-- MANBALAR (bazalar): "Geometriya", "Arifmetika" ...
+CREATE TABLE sources (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT UNIQUE NOT NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SAVOLLAR
+CREATE TABLE source_questions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    question_text   TEXT NOT NULL,
+    question_type   TEXT NOT NULL DEFAULT 'multiple_choice',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_q_source ON source_questions(source_id);
+
+-- JAVOB VARIANTLARI
+CREATE TABLE source_answers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id     INTEGER NOT NULL REFERENCES source_questions(id)
+                    ON DELETE CASCADE,
+    answer_text     TEXT NOT NULL,
+    is_correct      INTEGER NOT NULL DEFAULT 0,    -- 0 yoki 1
+    position        INTEGER DEFAULT 0              -- tartib (ixtiyoriy)
+);
+CREATE INDEX idx_a_question ON source_answers(question_id);
+
+MUHIM QOIDA: har bir savolda AYNAN 1 ta to'g'ri javob bo'lishi kerak
+(eski bazangizda 100% shunday). Variantlar soni 2 tadan 11 tagacha
+bo'lishi mumkin (eski bazada shunday uchraydi) — UI buni hisobga oladi.
+
+-- TESTLAR (foydalanuvchilarga ko'rinadigan)
+CREATE TABLE tests (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT UNIQUE NOT NULL,
+    time_limit_minutes  INTEGER DEFAULT 0,          -- 0 = cheksiz
+    is_active           INTEGER DEFAULT 1,          -- foydalanuvchiga ko'rinadimi
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- TEST QOIDALARI: qaysi manbadan nechta savol
+CREATE TABLE test_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    test_id         INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+    source_id       INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    question_count  INTEGER NOT NULL                -- nechta savol tushadi
+);
+-- Misol: test_id=1 uchun 2 ta qator:
+--   (test_id=1, source_id=Geometriya, question_count=10)
+--   (test_id=1, source_id=Arifmetika, question_count=3)
+-- Eski bazadagi "config" JSON o'rniga alohida jadval — qidirish, tahrirlash
+-- va validatsiya ancha oson bo'ladi. Eski JSON config import paytida shu
+-- jadvalga aylantiriladi.
+
+-- URINISHLAR (foydalanuvchi testni boshlaganda yaratiladi)
+CREATE TABLE attempts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id),
+    test_id         INTEGER NOT NULL REFERENCES tests(id),
+    started_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at     TIMESTAMP,                      -- NULL = hali tugamagan
+    total_questions INTEGER NOT NULL,
+    correct_count   INTEGER DEFAULT 0
+);
+CREATE INDEX idx_attempt_user ON attempts(user_id);
+CREATE INDEX idx_attempt_test ON attempts(test_id);
+CREATE INDEX idx_attempt_date ON attempts(started_at);
+
+-- URINISH SAVOLLARI (aynan shu urinishga tushgan random savollar)
+CREATE TABLE attempt_questions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id          INTEGER NOT NULL REFERENCES attempts(id)
+                        ON DELETE CASCADE,
+    question_id         INTEGER NOT NULL REFERENCES source_questions(id),
+    order_index         INTEGER NOT NULL,           -- 1, 2, 3...
+    shuffled_answers    TEXT,                       -- JSON: aralashtirilgan
+                                                    -- javob id'lari tartibi
+    selected_answer_id  INTEGER,                    -- NULL = javob berilmagan
+    is_correct          INTEGER                     -- NULL = javob berilmagan
+);
+CREATE INDEX idx_aq_attempt ON attempt_questions(attempt_id);
+
+-- XATOLIK XABARLARI (bug report)
+CREATE TABLE error_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users(id),
+    message_text        TEXT,                       -- xatolik mazmuni
+    telegram_msg_id     BIGINT,                     -- foydalanuvchi xabari ID
+    admin_msg_id        BIGINT,                     -- adminga yuborilgan xabar ID
+    status              TEXT DEFAULT 'open',        -- open | fixed
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    fixed_at            TIMESTAMP
+);
+
+-- BROADCAST TARIXI (ixtiyoriy, lekin foydali)
+CREATE TABLE broadcasts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_tg_id     BIGINT,
+    content_type    TEXT,                           -- text/photo/video...
+    sent_count      INTEGER DEFAULT 0,
+    failed_count    INTEGER DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+================================================================================
+5. TELEGRAM BOT — TO'LIQ FUNKSIONALLIK VA OQIMLAR
+================================================================================
+
+5.1. RO'YXATDAN O'TISH OQIMI (/start)
+--------------------------------------
+1) Foydalanuvchi /start bosadi.
+2) Bot bazani tekshiradi (telegram_id bo'yicha):
+   a) AGAR RO'YXATDAN O'TGAN bo'lsa -> to'g'ridan-to'g'ri asosiy menyu.
+   b) AGAR YANGI bo'lsa:
+      - Bot: "Assalomu alaykum! 👋 Test botiga xush kelibsiz.
+              Iltimos, ism-familiyangizni kiriting:"
+      - Foydalanuvchi ismini yozadi (FSM holat: waiting_name).
+        * Validatsiya: kamida 3 belgi, faqat matn (raqam/emoji emas
+          tekshirish shart emas, lekin bo'sh bo'lmasin).
+      - Bot: "Rahmat, {ism}! Endi telefon raqamingizni yuboring 📱"
+        + REPLY KEYBOARD: [📱 Telefon raqamni yuborish] (request_contact=True)
+        (FSM holat: waiting_phone)
+      - Foydalanuvchi kontakt yuboradi.
+        * MUHIM: contact.user_id == message.from_user.id tekshirilsin —
+          boshqa odamning kontaktini yuborib bo'lmasin.
+        * Qo'lda raqam yozsa ham qabul qilish mumkin (regex: +998...),
+          lekin asosiy yo'l — tugma.
+      - Bot bazaga yozadi: telegram_id, full_name, phone, username.
+      - Bot: "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!" + asosiy menyu.
+
+5.2. ASOSIY MENYU (Reply Keyboard, pastda doimiy turadi)
+--------------------------------------
+Oddiy foydalanuvchi uchun:
+  ┌─────────────────────────────────┐
+  │  📝 Testlarni boshlash          │   <- WebApp tugma (web_app parametri
+  │                                 │      bilan, Mini App ochiladi)
+  ├────────────────┬────────────────┤
+  │ 📊 Statistika  │ ⚠️ Xatolik     │
+  │                │ haqida xabar   │
+  ├────────────────┴────────────────┤
+  │  👨‍💻 Admin bilan aloqa           │
+  └─────────────────────────────────┘
+
+Admin uchun (telegram_id ADMIN_IDS ro'yxatida bo'lsa) qo'shimcha:
+  ├────────────────┬────────────────┤
+  │ 📈 Statistika  │ 📢 Barchaga    │
+  │ (batafsil)     │ xabar yuborish │
+  └────────────────┴────────────────┘
+
+5.3. 📊 STATISTIKA (oddiy foydalanuvchi uchun)
+--------------------------------------
+Chiroyli emojilar bilan shaxsiy statistika:
+
+  📊 Sizning statistikangiz
+
+  👤 Ism: Alisher Aliyev
+  📅 Ro'yxatdan o'tgan sana: 15.03.2026
+
+  ✅ Ishlangan testlar: 24 ta
+  🎯 O'rtacha natija: 78%
+  🏆 Eng yaxshi natija: 95% (TIF 2024)
+  📆 Bugun ishlangan: 2 ta
+
+5.4. ⚠️ XATOLIK HAQIDA XABAR BERISH — TO'LIQ OQIM
+--------------------------------------
+1) Foydalanuvchi "⚠️ Xatolik haqida xabar berish" tugmasini bosadi.
+2) Bot (FSM holat: waiting_report):
+   "⚠️ Xatolik haqida xabar berish
+
+    Iltimos, testdagi xatolikning SCREENSHOTINI va xatolik MAZMUNINI
+    BITTA XABARDA yuboring.
+
+    📌 Masalan: rasm + izoh (rasmga caption yozing).
+
+    Bekor qilish uchun: /cancel"
+3) Foydalanuvchi rasm (yoki bir nechta rasm — media group) + caption
+   yuboradi. Faqat matn yuborsa ham qabul qilinadi (lekin bot rasm
+   bo'lsa yaxshi deb eslatadi — majburiy emas).
+4) Bot xabarni ADMINGA FORWARD qiladi va OLDIDAN alohida xabar yuboradi:
+
+   "🚨 XATOLIK ANIQLANDI!
+
+    👤 Foydalanuvchi: Alisher Aliyev
+    🆔 ID: 123456789
+    📱 Tel: +998901234567
+    🕐 Vaqt: 19.07.2026 14:32"
+
+   Keyin foydalanuvchining asl xabari (screenshot + matn) forward
+   qilinadi. Media group bo'lsa — hammasi forward qilinadi.
+
+5) Forward qilingan xabar TAGIDA INLINE tugma:
+   [ ✅ Xatolik to'g'irlandi ]
+   callback_data: "fix_report:{report_id}"
+
+6) Admin xatoni to'g'irlab tugmani bosganda:
+   - Bazada report.status = 'fixed', fixed_at = hozirgi vaqt.
+   - Tugma matni "✅ To'g'irlandi (19.07.2026)" ga o'zgaradi
+     (qayta bosib bo'lmaydi).
+   - FOYDALANUVCHIGA avtomatik xabar boradi:
+     "✅ Siz yuborgan xatolik to'g'irlandi!
+      E'tiboringiz uchun rahmat! 🙏"
+7) Foydalanuvchiga: "✅ Xabaringiz adminga yuborildi. Xatolik
+   to'g'irlangach sizga xabar beramiz!" — va FSM holatdan chiqadi.
+
+TEXNIK DETALLAR:
+  - Media group (bir nechta rasm birga) uchun aiogram'da album
+    middleware ishlatiladi (xabarlarni 1 soniya kutib yig'ish).
+  - report_id ni callback'ga joylash uchun forward'dan keyin admin
+    xabar ID'si bazaga saqlanadi.
+  - Bir nechta admin bo'lsa — hammaga yuboriladi, birinchi bosgan
+    admin "to'g'irladi" hisoblanadi.
+
+5.5. 👨‍💻 ADMIN BILAN ALOQA
+--------------------------------------
+Tugma bosilganda bot yuboradi:
+
+  "👨‍💻 Admin bilan bog'lanish
+
+   Savol va takliflaringiz bo'lsa, to'g'ridan-to'g'ri adminga
+   yozishingiz mumkin:
+
+   ✍️ @admin_username"
+
++ INLINE tugma: [ ✍️ Adminga yozish ] -> url="https://t.me/admin_username"
+Bosganda foydalanuvchi to'g'ridan-to'g'ri admin akkauntiga chat ochadi.
+(admin_username .env faylida saqlanadi: ADMIN_USERNAME=...)
+
+5.6. 📈 ADMIN STATISTIKASI (faqat adminlar uchun)
+--------------------------------------
+"📈 Statistika" tugmasi bosilganda bazadan ANIQ raqamlar hisoblanadi:
+
+  📈 BATAFSIL STATISTIKA
+  ══════════════════════════
+
+  👥 FOYDALANUVCHILAR
+  ├ 📅 Bugun qo'shilganlar: 12 ta
+  ├ 📆 Shu hafta: 47 ta
+  └ 👤 Jami foydalanuvchilar: 1 250 ta
+
+  📝 TESTLAR
+  ├ 📅 Bugun ishlangan testlar: 34 ta
+  ├ 📊 Jami ishlangan testlar: 5 830 ta
+  ├ 🔥 Eng ko'p ishlangan test:
+  │    "UMUMIY 2024 100 TA SAVOL" (1 204 marta)
+  └ 🎯 O'rtacha natija: 71%
+
+  ⚠️ XATOLIKLAR
+  ├ 🔴 Ochiq xabarlar: 3 ta
+  └ ✅ To'g'irlanganlar: 41 ta
+
+  🕐 Yangilangan: 19.07.2026 15:00
+
+SQL misollar:
+  Bugun qo'shilganlar:
+    SELECT COUNT(*) FROM users WHERE DATE(registered_at)=DATE('now','localtime');
+  Kunlik ishlangan testlar:
+    SELECT COUNT(*) FROM attempts
+    WHERE finished_at IS NOT NULL
+      AND DATE(finished_at)=DATE('now','localtime');
+  Eng ko'p ishlangan test:
+    SELECT t.name, COUNT(*) c FROM attempts a JOIN tests t ON t.id=a.test_id
+    WHERE a.finished_at IS NOT NULL
+    GROUP BY t.id ORDER BY c DESC LIMIT 1;
+
++ INLINE tugma: [🔄 Yangilash] — statistikani qayta hisoblab, xabarni
+  edit qiladi.
+
+5.7. 📢 BARCHAGA XABAR YUBORISH (BROADCAST)
+--------------------------------------
+1) Admin "📢 Barchaga xabar yuborish" bosadi.
+2) Bot (FSM: waiting_broadcast):
+   "📢 Yubormoqchi bo'lgan xabaringizni yuboring.
+    Matn, rasm, video, fayl — hammasi mumkin.
+    Bekor qilish: /cancel"
+3) Admin xabar yuboradi.
+4) Bot PREVIEW ko'rsatadi (xabarni copy qilib) + tasdiqlash:
+   [ ✅ Yuborish ]  [ ❌ Bekor qilish ]
+5) Tasdiqlangach bot BARCHA users jadvalidagi foydalanuvchilarga
+   copy_message orqali yuboradi:
+   - Telegram limiti: sekundiga ~30 xabar. Shuning uchun har xabar
+     orasida asyncio.sleep(0.05) + har 25 tadan keyin 1 soniya pauza.
+   - Botni bloklagan foydalanuvchilar (Forbidden xatosi) —
+     is_blocked=1 deb belgilanadi, hisobga olinadi.
+6) Yakunda adminga hisobot:
+   "✅ Yuborildi: 1 198 ta
+    ❌ Yetib bormadi (bloklangan): 52 ta"
+
+5.8. QO'SHIMCHA BOT DETALLARI
+--------------------------------------
+- /cancel — istalgan FSM holatdan chiqish.
+- /help — qisqa yo'riqnoma.
+- Har bir xabarda user.last_active_at yangilanadi (middleware).
+- Bot xabarlari HTML parse_mode bilan chiroyli formatlanadi.
+- Web App tugmasi: KeyboardButton(text="📝 Testlarni boshlash",
+  web_app=WebAppInfo(url="https://sizning-domen.uz/app"))
+
+================================================================================
+6. WEB APP — FOYDALANUVCHI (TEST ISHLASH) QISMI
+================================================================================
+
+6.1. AVTORIZATSIYA
+--------------------------------------
+- Mini App ochilganda Telegram initData (window.Telegram.WebApp.initData)
+  backendga yuboriladi.
+- Backend initData imzosini BOT_TOKEN bilan HMAC-SHA256 orqali
+  TEKSHIRADI (bu Telegram rasmiy usuli). Tekshiruvsiz hech qanday
+  so'rov qabul qilinmaydi!
+- auth_date 24 soatdan eski bo'lsa — rad etiladi.
+- telegram_id bazada bo'lmasa: "Iltimos, avval botda ro'yxatdan
+  o'ting" sahifasi ko'rsatiladi (botga qaytish tugmasi bilan).
+- Muvaffaqiyatli bo'lsa backend qisqa muddatli JWT token qaytaradi,
+  keyingi so'rovlar shu token bilan.
+
+6.2. SAHIFA 1: TESTLAR RO'YXATI
+--------------------------------------
+- Yuqorida: "Salom, {ism}! 👋" + bugungi sana.
+- Aktiv testlar kartochkalar (card) ko'rinishida:
+  ┌────────────────────────────────┐
+  │ 📚 UMUMIY 2024 100 TA SAVOL    │
+  │ 🔢 100 ta savol   ⏱ 100 daqiqa │
+  │            [ Boshlash ▶ ]      │
+  └────────────────────────────────┘
+- Kartochka bosilganda tasdiqlash modali:
+  "Testni boshlaysizmi? 100 ta savol, 100 daqiqa"
+  [Boshlash] [Bekor qilish]
+- "Boshlash" -> POST /api/attempts -> backend random savollarni
+  tanlab attempt yaratadi -> test ekraniga o'tiladi.
+- Agar foydalanuvchining TUGALLANMAGAN urinishi bo'lsa —
+  "Davom ettirish" tugmasi ko'rsatiladi (sahifa yopilib qolsa ham
+  test yo'qolmaydi!).
+
+6.3. SAHIFA 2: TEST ISHLASH EKRANI (ENG MUHIM SAHIFA)
+--------------------------------------
+LAYOUT (telefon uchun, yuqoridan pastga):
+
+  ┌──────────────────────────────────────┐
+  │  TIF 2024              ⏱ 45:32      │  <- sticky header: test nomi
+  ├──────────────────────────────────────┤     + qolgan vaqt (taymer)
+  │ ①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮ ...      │  <- SAVOL NAVIGATSIYASI:
+  │ (gorizontal scroll bo'ladigan        │     yumaloq raqamlar paneli
+  │  yumaloq tugmalar qatori)            │
+  ├──────────────────────────────────────┤
+  │  7-savol / 20                        │
+  │                                      │
+  │  Bojxona nazorati zonasiga to'g'ri   │  <- savol matni (card ichida)
+  │  ta'rif berilgan qatorni toping?     │
+  │                                      │
+  │  ┌────────────────────────────────┐  │
+  │  │ A) Birinchi variant            │  │  <- variantlar: katta,
+  │  ├────────────────────────────────┤  │     bosish oson tugmalar
+  │  │ B) Ikkinchi variant            │  │     (min balandlik 48px)
+  │  ├────────────────────────────────┤  │
+  │  │ C) Uchinchi variant            │  │
+  │  ├────────────────────────────────┤  │
+  │  │ D) To'rtinchi variant          │  │
+  │  └────────────────────────────────┘  │
+  │                                      │
+  │  [◀ Oldingi]        [Keyingi ▶]     │
+  ├──────────────────────────────────────┤
+  │      [ 🏁 Testni yakunlash ]         │  <- sticky footer, doim ko'rinadi
+  └──────────────────────────────────────┘
+
+YUMALOQ RAQAMLAR PANELI — QOIDALAR:
+  - Har bir savol uchun bitta doira (raqam bilan).
+  - HOLATLAR va RANGLAR:
+      • Javob berilmagan:        kulrang chegara, oq fon
+      • Hozirgi ochiq savol:     ko'k chegara (qalin) / ko'k fon
+      • TO'G'RI javob berilgan:  YASHIL fon (#22c55e), oq raqam
+      • NOTO'G'RI javob:         QIZIL fon (#ef4444), oq raqam
+  - Istalgan doirani bossa — o'sha savolga o'tadi (javob berilgan
+    bo'lsa ham, ko'rish mumkin, lekin javobni O'ZGARTIRIB BO'LMAYDI —
+    chunki rang darhol ko'rsatiladi).
+  - Panel gorizontal scroll qilinadi; hozirgi savol doim ko'rinib
+    turishi uchun avtomatik scrollIntoView qilinadi.
+  - Savollar ko'p bo'lsa (50+) doiralar kichikroq (32px) bo'ladi.
+
+JAVOB BERISH JARAYONI:
+  1) Foydalanuvchi variantni bosadi.
+  2) Frontend darhol POST /api/attempts/{id}/answer yuboradi
+     (question_id, answer_id).
+  3) Backend javobni tekshiradi, bazaga yozadi va natijani qaytaradi:
+     { is_correct: true/false, correct_answer_id: N }
+  4) UI DARHOL ko'rsatadi:
+     - Tanlangan variant noto'g'ri bo'lsa: QIZIL bo'yaladi + to'g'ri
+       variant YASHIL ko'rsatiladi.
+     - To'g'ri bo'lsa: YASHIL bo'yaladi.
+     - Yuqoridagi doira ham mos rangga o'tadi.
+     - Haptic feedback: to'g'ri -> notificationOccurred('success'),
+       noto'g'ri -> notificationOccurred('error').
+  5) Variantlar bloklanadi (shu savolga qayta javob berib bo'lmaydi).
+  6) 0.8 soniyadan keyin AVTOMATIK keyingi javob berilmagan savolga
+     o'tish (ixtiyoriy sozlama; yoki foydalanuvchi o'zi "Keyingi"
+     bosadi — ikkalasini ham qo'llab-quvvatlash, avto-o'tish yoqilgan
+     holda boshlash tavsiya etiladi).
+
+MUHIM: To'g'ri javob faqat javob berilgandan KEYIN yuboriladi.
+Savollar ro'yxati so'ralganda (GET) to'g'ri javoblar YASHIRILADI —
+aks holda foydalanuvchi brauzer devtools orqali ko'rib qo'yishi mumkin.
+
+TAYMER:
+  - time_limit_minutes > 0 bo'lsa headerda kamayib boruvchi taymer.
+  - Oxirgi 5 daqiqada qizil rangga o'tadi va pulsatsiya.
+  - Vaqt tugasa: avtomatik yakunlash + natija sahifasi.
+  - Taymer server vaqtiga asoslanadi (started_at + limit),
+    sahifa yangilansa ham to'g'ri davom etadi.
+
+TESTNI YAKUNLASH:
+  - "🏁 Testni yakunlash" bosilganda modal:
+    "Testni yakunlaysizmi?
+     ✅ Javob berilgan: 14 ta
+     ⬜ Javob berilmagan: 6 ta"
+    [Ha, yakunlash] [Davom etish]
+  - Tasdiqlangach POST /api/attempts/{id}/finish -> natija sahifasi.
+
+6.4. SAHIFA 3: NATIJA SAHIFASI (chiroyli, zamonaviy)
+--------------------------------------
+  ┌──────────────────────────────────────┐
+  │            🎉 (yoki 💪)              │
+  │                                      │
+  │        ┌────────────────┐            │
+  │        │   AYLANA       │            │  <- animatsiyalangan circular
+  │        │   PROGRESS     │            │     progress ring (SVG):
+  │        │     85%        │            │     foiz 0 dan natijagacha
+  │        └────────────────┘            │     "o'sib" boradi
+  │                                      │
+  │   ✅ To'g'ri javoblar:    17 ta      │
+  │   ❌ Noto'g'ri javoblar:   2 ta      │
+  │   ⬜ Javob berilmagan:     1 ta      │
+  │   ⏱ Sarflangan vaqt:     23:45      │
+  │                                      │
+  │   Baholash matni:                    │
+  │   90-100%: "Ajoyib natija! 🏆"       │
+  │   70-89%:  "Yaxshi natija! 👏"       │
+  │   50-69%:  "Yomon emas! 💪"          │
+  │   0-49%:   "Ko'proq mashq qiling 📚" │
+  │                                      │
+  │   [ 📋 Javoblarni ko'rish ]          │  <- har bir savol bo'yicha
+  │   [ 🔄 Qayta ishlash ]               │     tahlil (qaysi savolga
+  │   [ 🏠 Bosh sahifa ]                 │     nima deb javob berilgan,
+  └──────────────────────────────────────┘     to'g'risi nima edi)
+
+  - Natija foizga qarab rang: yashil (70+), sariq (50-69), qizil (<50).
+  - Confetti animatsiyasi 90%+ natijada (engil CSS/canvas).
+  - "Qayta ishlash" -> YANGI attempt yaratiladi -> YANGI random
+    savollar tushadi (10-bo'limga qarang).
+
+6.5. RESPONSIVE QOIDALAR (foydalanuvchi qismi)
+--------------------------------------
+  - Mobile-first CSS. Asosiy dizayn 360-430px kenglik uchun.
+  - Planshet (>=768px): kontent markazda, max-width: 640px,
+    savol navigatsiyasi 2 qatorga wrap bo'lishi mumkin.
+  - Kompyuter (>=1024px): max-width: 720px markazda, variantlar
+    ustida hover effektlari.
+  - Telegram temasi bilan integratsiya:
+    Telegram.WebApp.themeParams ranglaridan foydalanish
+    (bg_color, text_color, button_color) — lekin to'g'ri/noto'g'ri
+    yashil/qizil ranglar doim o'zgarmas.
+  - Dark mode: Telegram temasi dark bo'lsa avtomatik qora fon.
+
+================================================================================
+7. WEB APP — ADMIN PANEL
+================================================================================
+
+7.1. LOGIN
+--------------------------------------
+- /admin sahifasi. Username + parol.
+- Backend pbkdf2:sha256 hash tekshiradi -> JWT token (8 soatlik).
+- Token localStorage'da, har so'rovda Authorization: Bearer header.
+- 3 marta noto'g'ri urinish -> 1 daqiqa kutish (bruteforce himoya).
+
+7.2. ASOSIY LAYOUT (kompyuter)
+--------------------------------------
+  ┌──────────┬───────────────────────────────────┐
+  │ SIDEBAR  │            KONTENT                │
+  │          │                                   │
+  │ 📊 Bosh  │                                   │
+  │   sahifa │                                   │
+  │ 📚 Manba │                                   │
+  │   lar    │                                   │
+  │ 🔍 Qidi  │                                   │
+  │   ruv    │                                   │
+  │ 📝 Test  │                                   │
+  │   lar    │                                   │
+  │ 📥 Import│                                   │
+  │ 🚪 Chiqish                                   │
+  └──────────┴───────────────────────────────────┘
+
+  Telefonda: sidebar -> yuqorida hamburger menyu (☰) orqali ochiladigan
+  drawer. Jadvallar gorizontal scroll bo'ladi yoki kartochkaga aylanadi.
+
+7.3. 📊 BOSH SAHIFA (Dashboard)
+--------------------------------------
+  - 4 ta stat-card: Jami foydalanuvchilar / Bugungi testlar /
+    Jami testlar / Ochiq xatoliklar.
+  - Oxirgi 7 kunlik ishlangan testlar grafigi (oddiy bar chart,
+    CSS yoki engil chart kutubxonasi).
+  - Oxirgi 10 ta urinish jadvali (kim, qaysi test, natija, vaqt).
+
+7.4. 📚 MANBALAR SAHIFASI
+--------------------------------------
+  - Jadval: № | Manba nomi | Savollar soni | Amallar
+  - [+ Yangi manba] tugmasi -> modal: nom kiritish.
+  - Amallar: ✏️ Nomini o'zgartirish | 🗑 O'chirish (tasdiqlash bilan:
+    "Bu manba va ichidagi 250 ta savol o'chiriladi. Ishonchingiz
+    komilmi?" — agar manba biror testda ishlatilayotgan bo'lsa,
+    OGOHLANTIRISH: "Bu manba 'TIF 2024' testida ishlatilmoqda!").
+  - Manba nomi bosilganda -> MANBA ICHI sahifasi.
+
+7.5. MANBA ICHI SAHIFASI (savollar boshqaruvi)
+--------------------------------------
+  - Yuqorida: manba nomi, savollar soni, [+ Savol qo'shish],
+    [📥 Import] tugmalari.
+  - QIDIRUV maydoni: savol matni YOKI javob variantlari matni bo'yicha
+    real-time qidiradi (300ms debounce).
+  - Savollar ro'yxati (pagination, har sahifada 20 ta):
+    ┌─────────────────────────────────────────────┐
+    │ #12  Bojxona nazorati zonasi...        ✏️ 🗑 │
+    │  ✅ To'g'ri javob matni (yashil)             │
+    │  ▸ boshqa variantlar (yig'ilgan/ochiladigan)│
+    └─────────────────────────────────────────────┘
+  - ✏️ bosilganda TAHRIRLASH MODALI (7.7-bo'lim).
+  - 🗑 bosilganda tasdiqlash -> o'chirish (javoblari bilan CASCADE).
+  - [+ Savol qo'shish] -> xuddi shu modal, bo'sh holda.
+
+7.6. 🔍 GLOBAL QIDIRUV SAHIFASI (BARCHA manbalar bo'ylab)
+--------------------------------------
+SIZ SO'RAGAN MUHIM FUNKSIYA:
+
+  - Bitta katta qidiruv maydoni: "Barcha manbalardan qidirish..."
+  - Qidiruv MEXANIZMI: kiritilgan matn quyidagilardan qidiriladi:
+      a) source_questions.question_text ichidan (LIKE %...%)
+      b) source_answers.answer_text ichidan (LIKE %...%)
+    SQL:
+      SELECT DISTINCT q.id, q.question_text, s.name AS source_name
+      FROM source_questions q
+      JOIN sources s ON s.id = q.source_id
+      LEFT JOIN source_answers a ON a.question_id = q.id
+      WHERE q.question_text LIKE :query OR a.answer_text LIKE :query
+      ORDER BY s.name, q.id
+      LIMIT 50 OFFSET :offset;
+  - Qidiruvda KATTA-KICHIK harf farqlanmasin (COLLATE NOCASE yoki
+    LOWER()). Kirill va lotin matnlar uchun ham ishlaydi.
+  - Natijalar ro'yxati — har bir natijada:
+      • Manba nomi (badge ko'rinishida): [Geometriya]
+      • Savol matni (topilgan qism SARIQ highlight bilan)
+      • Mos kelgan javob varianti (agar javobdan topilgan bo'lsa)
+      • Tugmalar: [✏️ Tahrirlash] [🗑 O'chirish]
+  - ✏️ -> TAHRIRLASH MODALI ochiladi (7.7). Saqlangach:
+      • O'zgarish TO'G'RIDAN-TO'G'RI bazadagi savolga yoziladi,
+        ya'ni MANBA ICHIDA HAM o'zgaradi (bir xil jadval, shuning
+        uchun avtomatik).
+      • Qidiruv natijasi ham yangilanadi.
+  - 🗑 -> tasdiqlash modali -> savol javoblari bilan bazadan
+    O'CHIRILADI -> manba ichidan ham yo'qoladi (CASCADE) ->
+    natijalar ro'yxatidan olib tashlanadi.
+  - ESLATMA: agar o'chirilayotgan savol birorta faol attempt'da
+    ishlatilayotgan bo'lsa, attempt_questions'da question_id saqlanadi —
+    bunda savol matnining nusxasini attempt_questions'ga yozib qo'yish
+    SHART EMAS, lekin o'chirishda FK xatosi bo'lmasligi uchun
+    ON DELETE qoidasi: tarixiy urinishlarda savol "o'chirilgan" deb
+    ko'rsatiladi (LEFT JOIN natijasida NULL). Bu qabul qilinadigan
+    kompromis.
+
+7.7. SAVOLNI TAHRIRLASH MODALI
+--------------------------------------
+  ┌───────────────────────────────────────────┐
+  │  Savolni tahrirlash              [✕]      │
+  │                                           │
+  │  Manba: [Geometriya ▾]  <- boshqa manbaga │
+  │                            ko'chirish ham │
+  │                            mumkin         │
+  │  Savol matni:                             │
+  │  ┌─────────────────────────────────────┐  │
+  │  │ (textarea, auto-resize)             │  │
+  │  └─────────────────────────────────────┘  │
+  │                                           │
+  │  Javob variantlari:                       │
+  │  (•) [To'g'ri javob matni............] 🗑 │  <- radio: to'g'ri javob
+  │  ( ) [Variant 2......................] 🗑 │
+  │  ( ) [Variant 3......................] 🗑 │
+  │  ( ) [Variant 4......................] 🗑 │
+  │  [+ Variant qo'shish]                     │
+  │                                           │
+  │  Validatsiya xabarlari shu yerda          │
+  │                                           │
+  │         [Bekor qilish]  [💾 Saqlash]      │
+  └───────────────────────────────────────────┘
+
+  VALIDATSIYA (saqlashdan oldin):
+    - Savol matni bo'sh emas.
+    - Kamida 2 ta variant.
+    - AYNAN 1 ta to'g'ri javob belgilangan.
+    - Variantlar matni bo'sh emas.
+    - Bir xil variant ikki marta yozilmagan (ogohlantirish).
+
+7.8. 📝 TESTLAR SAHIFASI + TEST TUZISH (Test Builder)
+--------------------------------------
+  TESTLAR RO'YXATI:
+  - Jadval: Nomi | Savollar (jami) | Vaqt | Holati (aktiv/o'chiq) |
+    Ishlangan (marta) | Amallar (✏️ 🗑 va aktiv/nofaol switch).
+
+  [+ Yangi test yaratish] -> TEST BUILDER sahifasi:
+
+  ┌─────────────────────────────────────────────┐
+  │  Test nomi:  [_________________________]    │
+  │  Vaqt chegarasi (daqiqa): [ 60 ]  (0=yo'q)  │
+  │                                             │
+  │  MANBALAR VA SAVOLLAR SONI:                 │
+  │  ┌─────────────────────────────────────┐    │
+  │  │ [Geometriya ▾]  [10] ta savol   🗑  │    │  <- har qator:
+  │  │  (bazada 30 ta savol bor)           │    │     manba tanlash +
+  │  ├─────────────────────────────────────┤    │     son kiritish
+  │  │ [Arifmetika ▾]  [3] ta savol    🗑  │    │
+  │  │  (bazada 15 ta savol bor)           │    │
+  │  └─────────────────────────────────────┘    │
+  │  [+ Manba qo'shish]                         │
+  │                                             │
+  │  JAMI: 13 ta savol tushadi                  │
+  │                                             │
+  │  VALIDATSIYA:                               │
+  │  - question_count <= manbadagi savollar soni│
+  │    (aks holda qizil xato: "Geometriyada     │
+  │     faqat 30 ta savol bor, 35 so'rayapsiz") │
+  │  - bitta manba ikki marta tanlanmasin       │
+  │  - kamida 1 ta manba bo'lsin                │
+  │                                             │
+  │            [Bekor]   [💾 Saqlash]           │
+  └─────────────────────────────────────────────┘
+
+  - Tahrirlash ham xuddi shu sahifada (mavjud qiymatlar bilan).
+  - Manba qo'shish/olib tashlash cheklovsiz (xohlagancha).
+  - Manbadan savol o'chirilib, testdagi question_count > mavjud
+    savollar soni bo'lib qolsa: test ro'yxatida OGOHLANTIRISH belgisi
+    (⚠️) ko'rsatiladi va foydalanuvchi bu testni boshlaganda backend
+    mavjud savollar sonicha beradi (yoki test nofaol qilinadi —
+    tavsiya: ogohlantirish + mavjudicha berish).
+
+7.9. 📥 IMPORT SAHIFASI
+--------------------------------------
+  1-QADAM: Manba tanlash yoki yangi manba nomi kiritish
+           ("Import qilinadigan savollar qaysi manbaga qo'shilsin?")
+  2-QADAM: Fayl yuklash (drag & drop + tanlash tugmasi)
+           Qabul qilinadi: .txt, .docx, .db
+  3-QADAM: PREVIEW (juda muhim!):
+           - Backend faylni parse qilib, topilgan savollarni JSON
+             qilib qaytaradi (hali bazaga YOZILMAYDI).
+           - Admin jadvalda ko'radi: № | Savol | Variantlar soni |
+             To'g'ri javob | Holat (✅ yaroqli / ⚠️ muammoli)
+           - MUAMMOLI savollar (to'g'ri javob topilmagan, variant
+             2 tadan kam...) sariq/qizil belgilanadi va ro'yxat
+             boshida ko'rsatiladi. Adminning tanlovi:
+             a) muammolilarni tashlab ketish, b) modal orqali qo'lda
+             to'g'rilash, c) importni bekor qilish.
+           - Dublikat tekshiruvi: manbada AYNAN SHU savol matni bor
+             bo'lsa "Takroriy" deb belgilanadi (import qilinmaydi,
+             lekin admin xohlasa checkbox bilan baribir qo'shadi).
+  4-QADAM: [✅ Importni tasdiqlash] -> bazaga yoziladi -> hisobot:
+           "245 ta savol qo'shildi, 3 ta takroriy o'tkazib yuborildi,
+            2 ta muammoli tashlab ketildi".
+
+================================================================================
+8. IMPORT TIZIMI — PARSING ALGORITMLARI (ENG MUHIM QISM)
+================================================================================
+
+Sizning fayllaringiz tahlili asosida ANIQ qoidalar:
+
+8.1. UMUMIY PRINTSIPLAR (normalizer.py)
+--------------------------------------
+- Barcha formatlar parse qilingach BIR XIL ichki formatga keladi:
+    { "question": str, "answers": [ {"text": str, "correct": bool} ] }
+- TOZALASH har bir matnga qo'llanadi:
+    • Bosh/oxiridagi bo'shliqlar, ko'p probellar -> bitta probel.
+    • Word'dan qolgan **bold** belgilari (agar markdown ko'rinishda
+      kelsa) olib tashlanadi.
+    • Ko'rinmas belgilar: \u00A0 (nbsp), \u200B (zero-width) olib
+      tashlanadi.
+    • Savol boshidagi raqamlash olib tashlanadi:
+      regex: ^\s*\d+\s*[.\)]\s*  ("1.", "12)", "3 ." ...)
+    • Variant boshidagi harf belgilash olib tashlanadi (ixtiyoriy):
+      ^[A-DА-Г]\s*[.\)]\s* — LEKIN ehtiyot bo'lish kerak, chunki javob
+      "A) ..." bilan boshlanmasligi ham mumkin. Faqat barcha variantlar
+      bir xil naqshda bo'lsagina olib tashlash.
+- TO'G'RI JAVOB BELGILARI (fayllaringizda uchraydi):
+    • "*"  — eng keng tarqalgan (TIF.docx, Тест_МЭД.docx ...)
+    • "+"  — ba'zi fayllarda
+    • "#"  — zaxira sifatida qo'llab-quvvatlash
+  Belgi variant matnining BOSHIDA turadi, lekin:
+    • Oldin/keyin probel bo'lishi mumkin: "* Yo'q", "*Yo'q", " * Yo'q"
+    • Bold ichida bo'lishi mumkin: "***Матн" (docx'da *** ko'rinib
+      qoladi — bir nechta * ketma-ket kelsa hammasi olib tashlanadi)
+  Regex: ^\s*[\*\+#]+\s*  -> topilsa correct=True, belgi o'chiriladi.
+- VALIDATSIYA har bir savol uchun:
+    • question bo'sh emas
+    • kamida 2 ta variant
+    • aynan 1 ta correct=True (0 ta yoki 2+ bo'lsa -> "muammoli")
+
+8.2. .DOCX PARSER (docx_parser.py)
+--------------------------------------
+Sizning 4 ta docx faylingizda 2 XIL struktura bor:
+
+FORMAT A — "har savol alohida jadval" (TIF.docx, Тест_МЭД.docx):
+  - Hujjatda ko'p jadvallar, har jadval 1 ustunli:
+      1-qator: savol matni (raqam bilan boshlanadi)
+      keyingi qatorlar: variantlar (to'g'risi * bilan)
+  - python-docx: document.tables bo'ylab yurish, har table uchun
+    rows[0] -> savol, rows[1:] -> variantlar.
+
+FORMAT B — "bitta katta jadval, savollar aralash"
+  (20_ta_Savol-javob..., Qo_mitadan...):
+  - BITTA jadvalda hamma narsa qatorlar ketma-ketligida:
+      savol qatori (RAQAM bilan boshlanadi: "1.", "**2.**"...),
+      keyin uning variantlari, keyin yangi savol qatori...
+  - ALGORITM: har qator matnini olamiz;
+      agar qator regex ^\s*\**\s*\d+\s*[.\)] ga mos kelsa -> YANGI
+      SAVOL boshlandi (oldingi savolni yopamiz);
+      aks holda -> joriy savolning varianti.
+  - E'TIBOR: docx jadval qatorida "---" separator qatori bo'lishi
+    mumkin (markdown eksportda) — bunday qatorlar tashlab yuboriladi.
+
+UNIVERSAL DOCX ALGORITM (ikkala formatni ham yeydi):
+  1) Hujjatdagi BARCHA jadval qatorlarini tartib bilan tekis
+     ro'yxatga yig'amiz (har qator = bitta matn; ko'p ustunli bo'lsa
+     ustunlar birlashtiriladi).
+  2) Jadvaldan tashqaridagi paragraflar (sarlavhalar: "ТЕСТ САВОЛ
+     ЖАВОБЛАРИ" kabi) E'TIBORGA OLINMAYDI (lekin agar hujjatda umuman
+     jadval bo'lmasa — paragraflar ro'yxati olinadi va TXT algoritmi
+     qo'llanadi, chunki ba'zi docx'lar jadvalsiz bo'lishi mumkin).
+  3) Tekis ro'yxat ustida "savol / variant" ajratish:
+     - Qator savolmi? -> raqam naqshi bilan boshlansa: ^\**\s*\d+\s*[.\)]
+     - Yoki (FORMAT A uchun): yangi table boshlanishi ham "yangi savol"
+       signali — parser table chegaralarini biladi.
+  4) Har variant qatorida to'g'ri javob belgisi (* + #) tekshiriladi.
+  5) Normalizatsiya + validatsiya.
+  6) Bo'sh qatorlar, faqat "---" bo'lgan qatorlar tashlanadi.
+  7) Takror savollar (fayl ichida ham) aniqlanadi (TIF.docx'da 5- va
+     6-savol bir xil edi!) — preview'da "fayl ichida takror" deb
+     ko'rsatiladi.
+
+8.3. .TXT PARSER (txt_parser.py)
+--------------------------------------
+TXT fayllarda keng tarqalgan formatlar (hammasi qo'llab-quvvatlanadi):
+
+  FORMAT 1 (bo'sh qator bilan ajratilgan bloklar):
+      1. Savol matni?
+      A) variant
+      *B) to'g'ri variant
+      C) variant
+
+      2. Keyingi savol...
+
+  FORMAT 2 (+ belgili):
+      Savol matni?
+      +to'g'ri javob
+      noto'g'ri javob
+      noto'g'ri javob
+
+  ALGORITM:
+  1) Fayl UTF-8 da o'qiladi (BOM bilan ham: encoding='utf-8-sig';
+     agar UnicodeDecodeError -> cp1251 bilan urinish — eski kirill
+     fayllar uchun).
+  2) Qatorlarga bo'linadi, bo'sh qatorlar blok ajratuvchi hisoblanadi.
+  3) Agar bloklar aniq bo'lsa: blokning 1-qatori savol, qolganlari
+     variantlar.
+  4) Agar bo'sh qatorlar tartibsiz bo'lsa: raqam naqshi bo'yicha
+     ajratish (docx'dagi kabi).
+  5) To'g'ri javob belgisi va normalizatsiya — umumiy qoidalar.
+
+8.4. .DB PARSER (db_parser.py)
+--------------------------------------
+Sizning eski SQLite fayllaringiz strukturasi ANIQLANDI va to'liq
+qo'llab-quvvatlanadi:
+
+  Kutiladigan jadvallar:
+    sources(id, name)
+    source_questions(id, source_id, question_text, question_type)
+    source_answers(id, question_id, answer_text, is_correct)
+    tests(id, name, time_limit_minutes, config [, category_id])   <- ixtiyoriy
+    categories(...)                                                <- ixtiyoriy
+
+  ALGORITM:
+  1) Yuklangan .db fayl vaqtinchalik joyga saqlanadi, sqlite3 bilan
+     READ-ONLY ochiladi (mode=ro) — xavfsizlik uchun.
+  2) Jadval mavjudligi tekshiriladi (sqlite_master). Agar struktura
+     mos kelmasa -> aniq xato xabari: "Faylda source_questions
+     jadvali topilmadi".
+  3) IKKI XIL IMPORT REJIMI (admin tanlaydi):
+     a) "Bitta manbaga qo'shish" — barcha savollar tanlangan bitta
+        manbaga quyiladi.
+     b) "Manbalari bilan to'liq import" — .db ichidagi sources
+        nomlari bilan yangi manbalar yaratiladi (nom to'qnashsa:
+        "Geometriya (import)" deb qo'shiladi yoki mavjudiga
+        birlashtiriladi — admin tanlovi) va savollar mos manbalarga
+        joylanadi. TESTLAR config JSON'i ham o'qilib, yangi
+        test_rules formatiga aylantirilishi mumkin (ixtiyoriy
+        checkbox: "Testlarni ham import qilish").
+  4) question_type 'multiple-choice' va 'multiple_choice' ikkalasi
+     ham qabul qilinadi (eski fayllarda ikkalasi ham bor edi!) —
+     'multiple_choice' ga normalizatsiya qilinadi.
+  5) Savol matnidagi HTML teglar (<b>, <i>) saqlanishi yoki
+     tozalanishi mumkin — tavsiya: saqlansin, frontend xavfsiz
+     render qiladi (faqat b/i/u ga ruxsat, qolgani escape).
+  6) Dublikatlar (matn bo'yicha) preview'da belgilanadi.
+
+8.5. IMPORT API OQIMI
+--------------------------------------
+  POST /api/admin/import/parse    (multipart: file, source_id yoki
+                                   new_source_name, db_mode)
+    -> { parsed: [...savollar...], stats: {...}, problems: [...] }
+  POST /api/admin/import/commit   (body: tasdiqlangan savollar ro'yxati)
+    -> { added: N, skipped: M }
+  Fayl hajmi limiti: 20 MB. Faqat .txt/.docx/.db kengaytmalari.
+
+================================================================================
+9. QIDIRUV VA TAHRIRLASH — QO'SHIMCHA TEXNIK DETALLAR
+================================================================================
+
+- Qidiruv debounce: foydalanuvchi yozishni to'xtatgach 300ms kutib
+  so'rov yuboriladi (har harfda emas).
+- Highlight: topilgan so'z <mark> tegi bilan sariq belgilanadi
+  (XSS'dan himoya: avval matn escape qilinadi, keyin mark qo'yiladi).
+- Pagination: 50 tadan, "Yana yuklash" tugmasi yoki sahifalash.
+- Qidiruvda filtr (ixtiyoriy, foydali): manba bo'yicha dropdown
+  ("Barcha manbalar" / bitta manba).
+- Tahrirlash saqlanganda: PUT /api/admin/questions/{id} — savol matni,
+  variantlar (yangilari qo'shilishi, eskilarí o'chirilishi mumkin),
+  to'g'ri javob. Backend eski variantlarni o'chirib yangisini yozadi
+  (yoki diff qiladi — soddaroq: transaction ichida delete+insert).
+- O'chirish: DELETE /api/admin/questions/{id} — CASCADE javoblar ham.
+- Har amaldan keyin toast: "✅ Savol saqlandi" / "🗑 O'chirildi".
+
+================================================================================
+10. RANDOM SAVOL TANLASH ALGORITMI (random_picker.py)
+================================================================================
+
+Foydalanuvchi testni boshlaganida (POST /api/attempts):
+
+  1) test_rules o'qiladi: [(source_id=1, count=10), (source_id=2, count=3)]
+  2) HAR BIR qoida uchun:
+       SELECT id FROM source_questions WHERE source_id = :sid
+       -> Python'da: random.sample(ids, min(count, len(ids)))
+     random.sample TAKRORLANMASLIKNI kafolatlaydi (bitta urinish
+     ichida bitta savol faqat 1 marta tushadi).
+  3) Barcha tanlangan savollar bitta ro'yxatga yig'iladi va
+     random.shuffle bilan umumiy tartibi ham aralashtiriladi
+     (geometriya savollari ketma-ket kelmasligi uchun).
+  4) Har savol uchun javob VARIANTLARI ham aralashtiriladi va tartib
+     attempt_questions.shuffled_answers (JSON) ga yoziladi — shunda
+     sahifa yangilanganda ham variantlar joyi o'zgarmaydi.
+  5) attempt + attempt_questions bazaga yoziladi.
+
+  KAFOLATLAR:
+  - Har yangi urinish = yangi random tanlov. Foydalanuvchi qayta
+    ishlasa BOSHQA (yana random) savollar tushadi.
+  - Misol: Geometriyada 30 ta savol, testda 20 ta so'ralgan ->
+    har urinishda 30 dan ixtiyoriy 20 tasi, takrorsiz.
+  - Agar manbada so'ralganidan KAM savol qolgan bo'lsa (admin
+    o'chirgan) -> borisha beriladi va logga ogohlantirish yoziladi.
+
+================================================================================
+11. BACKEND API — ENDPOINTLAR RO'YXATI
+================================================================================
+
+AUTH:
+  POST /api/auth/telegram        initData -> JWT (foydalanuvchi)
+  POST /api/auth/admin/login     username+parol -> JWT (admin)
+
+FOYDALANUVCHI (JWT user):
+  GET  /api/tests                        aktiv testlar ro'yxati
+  GET  /api/attempts/active              tugallanmagan urinish (bo'lsa)
+  POST /api/attempts                     {test_id} -> urinish yaratish
+  GET  /api/attempts/{id}                urinish holati + savollar
+                                         (TO'G'RI JAVOBLARSIZ!
+                                          faqat javob berilganlarga
+                                          natija qo'shiladi)
+  POST /api/attempts/{id}/answer         {question_id, answer_id}
+                                         -> {is_correct, correct_answer_id}
+  POST /api/attempts/{id}/finish         -> natija
+  GET  /api/attempts/{id}/review         yakunlangach batafsil tahlil
+
+ADMIN (JWT admin):
+  GET/POST/PUT/DELETE /api/admin/sources
+  GET  /api/admin/sources/{id}/questions?search=&page=
+  GET  /api/admin/search?q=&source_id=&page=       <- GLOBAL qidiruv
+  POST/PUT/DELETE /api/admin/questions[/{id}]
+  GET/POST/PUT/DELETE /api/admin/tests[/{id}]
+  POST /api/admin/import/parse
+  POST /api/admin/import/commit
+  GET  /api/admin/stats                            dashboard uchun
+
+Umumiy qoidalar:
+  - Barcha javoblar JSON, xatolar: {detail: "..."} + to'g'ri HTTP kod.
+  - CORS faqat o'z domenlarga ochiladi.
+  - Rate limit: foydalanuvchi API'ga 60 so'rov/daqiqa.
+
+================================================================================
+12. XATOLIK XABARLARI TIZIMI — QISQACHA SXEMA
+================================================================================
+
+  Foydalanuvchi                Bot                       Admin
+      │  "⚠️ Xatolik..." bosdi   │                          │
+      │─────────────────────────>│                          │
+      │  <- "Screenshot+izoh     │                          │
+      │      bitta xabarda"      │                          │
+      │  rasm+caption yubordi    │                          │
+      │─────────────────────────>│  "🚨 XATOLIK ANIQLANDI"  │
+      │                          │─────────────────────────>│
+      │                          │  + forward (screenshot)  │
+      │                          │─────────────────────────>│
+      │                          │  [✅ Xatolik to'g'irlandi]│
+      │  <- "Xabaringiz          │                          │
+      │      yuborildi ✅"        │        tugmani bosdi     │
+      │                          │<─────────────────────────│
+      │  <- "✅ Siz yuborgan      │                          │
+      │  xatolik to'g'irlandi!"  │                          │
+      │<─────────────────────────│                          │
+
+================================================================================
+13. STATISTIKA TIZIMI — HISOBLASH QOIDALARI
+================================================================================
+
+Barcha ko'rsatkichlar REAL VAQTDA bazadan SQL bilan hisoblanadi
+(alohida "counter" saqlanmaydi — aniqlik kafolati):
+
+  - Kunlik foydalanuvchilar  = users WHERE DATE(registered_at)=bugun
+  - Jami foydalanuvchilar    = COUNT(users)
+  - Kunlik ishlangan testlar = attempts WHERE finished_at bugun
+  - Jami ishlangan testlar   = attempts WHERE finished_at IS NOT NULL
+  - Eng ko'p ishlangan test  = GROUP BY test_id ORDER BY COUNT DESC
+  - Faol foydalanuvchilar    = last_active_at >= bugun
+
+  Vaqt zonasi: Asia/Tashkent (UTC+5) — barcha DATE() hisoblarida
+  localtime yoki Python'da zoneinfo bilan aniq belgilanadi. Bu juda
+  muhim, aks holda "bugungi" statistika yarim tunda noto'g'ri bo'ladi.
+
+================================================================================
+14. BROADCAST — TEXNIK DETALLAR
+================================================================================
+
+  - copy_message ishlatiladi (forward emas) — "Forwarded from" yozuvi
+    chiqmaydi, professional ko'rinadi.
+  - Har xabar orasida kichik pauza (flood limitdan himoya).
+  - TelegramForbiddenError -> is_blocked=1.
+  - TelegramRetryAfter -> ko'rsatilgan soniya kutib davom etadi.
+  - Jarayon davomida adminga progress: "Yuborilmoqda... 450/1250"
+    (har 100 tada xabar edit qilinadi).
+  - Broadcast tugagach broadcasts jadvaliga yoziladi.
+
+================================================================================
+15. UI/UX DIZAYN TIZIMI (DESIGN SYSTEM)
+================================================================================
+
+RANGLAR (CSS variables):
+  --color-primary:    #2563eb   (ko'k — asosiy tugmalar, aktiv holat)
+  --color-success:    #22c55e   (yashil — to'g'ri javob)
+  --color-error:      #ef4444   (qizil — noto'g'ri javob)
+  --color-warning:    #f59e0b   (sariq — ogohlantirish)
+  --color-bg:         #f8fafc   (och fon)  / dark: #0f172a
+  --color-card:       #ffffff              / dark: #1e293b
+  --color-text:       #0f172a              / dark: #f1f5f9
+  --color-muted:      #64748b
+  --radius:           16px      (kartalar), 12px (tugmalar), 50% (doiralar)
+  --shadow:           0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05)
+
+TIPOGRAFIKA:
+  - Font: system-ui / -apple-system / "Inter" (kirill qo'llab-quvvatlaydi)
+  - Savol matni: 17px, line-height 1.5, font-weight 600
+  - Variantlar: 15-16px
+  - Kichik matn: 13px
+
+KOMPONENT QOIDALARI:
+  - Tugmalar min balandligi 48px (barmoq uchun qulay).
+  - Bosishda scale(0.97) mikro-animatsiya (transition 0.15s).
+  - Variant to'g'ri/noto'g'ri bo'yalganda yumshoq transition (0.3s)
+    + noto'g'rida engil "shake" animatsiya.
+  - Skeleton loading: ma'lumot yuklanayotganda kulrang placeholder.
+  - Toast bildirishnomalar: pastdan chiqadi, 3 soniyada yo'qoladi.
+  - Modal: fon qorayadi (backdrop blur), markazda karta, telefonda
+    pastdan chiqadigan bottom-sheet ko'rinishida.
+  - Barcha animatsiyalar prefers-reduced-motion hurmat qiladi.
+
+ADMIN PANEL USLUBI:
+  - Toza, minimal, professional (Notion/Linear uslubida).
+  - Jadval qatorlari hover'da och fon.
+  - Sidebar aktiv bo'limi belgilangan.
+  - Har xavfli amal (o'chirish) uchun ikki bosqichli tasdiqlash.
+
+================================================================================
+16. XAVFSIZLIK
+================================================================================
+
+  1) Telegram initData HMAC tekshiruvi — MAJBURIY (soxta so'rovlardan
+     himoya). Kod: secret_key = HMAC_SHA256("WebAppData", bot_token);
+     hash = HMAC_SHA256(secret_key, data_check_string) taqqoslanadi.
+  2) To'g'ri javoblar frontendga faqat javob berilgandan KEYIN
+     yuboriladi (savol yuklashda emas).
+  3) Admin parollari pbkdf2:sha256 (yoki bcrypt) bilan hash.
+  4) JWT: qisqa muddat, SECRET_KEY .env da, hech qachon git'ga
+     yozilmaydi.
+  5) SQL injection: faqat ORM/parametrlangan so'rovlar.
+  6) XSS: barcha foydalanuvchi/savol matnlari render'dan oldin
+     escape qilinadi (innerHTML o'rniga textContent; HTML kerak
+     bo'lsa faqat oq ro'yxatdagi teglar).
+  7) Yuklangan fayllar: kengaytma + hajm tekshiruvi, vaqtinchalik
+     papkada, ishlov berilgach o'chiriladi. .db read-only ochiladi.
+  8) Admin API'lari alohida JWT scope bilan himoyalangan.
+  9) HTTPS majburiy (Telegram Mini App http'da ishlamaydi).
+  10) attempt'ga faqat EGASI kirishi tekshiriladi
+      (attempt.user_id == token.user_id).
+
+================================================================================
+17. DEPLOY (SERVERGA JOYLASHTIRISH)
+================================================================================
+
+  1) Server: 1-2 GB RAM VPS yetarli (Ubuntu 22.04+).
+  2) Domen + Let's Encrypt SSL (certbot).
+  3) Nginx konfiguratsiya:
+       /            -> frontend-user (statik build)
+       /admin       -> frontend-admin (statik build)
+       /api         -> proxy_pass http://127.0.0.1:8000 (FastAPI)
+  4) systemd servislari:
+       testbot-api.service   -> uvicorn app.main:app
+       testbot-bot.service   -> python bot.py (polling; webhook ham
+                                mumkin, polling soddaroq)
+  5) .env misoli:
+       BOT_TOKEN=...
+       ADMIN_IDS=123456789,987654321
+       ADMIN_USERNAME=admin_nick
+       SECRET_KEY=...
+       DATABASE_URL=sqlite:///./data/app.db
+       WEBAPP_URL=https://domen.uz
+  6) Zaxira nusxa: har kuni SQLite fayl nusxalanadi (cron, 7 kunlik
+     aylanma).
+
+================================================================================
+18. KELAJAKDA QO'SHISH MUMKIN BO'LGAN FUNKSIYALAR (ixtiyoriy)
+================================================================================
+
+  - Reyting jadvali (leaderboard) — eng yaxshi natijalar.
+  - Test natijasini PDF sertifikat qilib yuborish.
+  - Savollarga rasm biriktirish imkoniyati.
+  - Excel (.xlsx) import.
+  - Test kategoriyalari (eski bazada categories jadvali bor edi).
+  - Foydalanuvchi natijalarini adminga Excel eksport.
+  - Bir savolda bir nechta to'g'ri javob (multi-select) rejimi.
+  - PostgreSQL'ga o'tish (foydalanuvchilar ko'payganda).
+
+================================================================================
+19. ISHLAB CHIQISH BOSQICHLARI (ROADMAP)
+================================================================================
+
+  1-BOSQICH (poydevor):
+    - Baza sxemasi + migratsiyalar
+    - FastAPI skelet + admin login
+    - Bot: /start, ro'yxatdan o'tish, asosiy menyu
+
+  2-BOSQICH (admin yadro):
+    - Manbalar CRUD
+    - Savollar CRUD + manba ichida qidiruv
+    - Import: .db parser (eng oson, strukturasi aniq) -> keyin
+      .docx -> keyin .txt
+    - Global qidiruv + tahrirlash modali
+
+  3-BOSQICH (test dvigateli):
+    - Test builder (qoidalar bilan)
+    - Random tanlash + attempt API
+    - Foydalanuvchi Mini App: ro'yxat -> test -> natija
+
+  4-BOSQICH (bot funksiyalari):
+    - Statistika (user + admin)
+    - Xatolik xabari oqimi + "To'g'irlandi" tugmasi
+    - Admin bilan aloqa
+    - Broadcast
+
+  5-BOSQICH (sayqal):
+    - Dizayn sayqali, animatsiyalar, dark mode
+    - Xatolarni tutish, loglar
+    - Eski .db fayllarni to'liq import qilish (2083+1700 savol)
+    - Test + deploy
+
+================================================================================
+                              HUJJAT YAKUNI
+================================================================================
