@@ -1,0 +1,17 @@
+1. O‘zbekiston Respublikasining poytaxti qaysi shahar?
+A) Samarqand
+*B) Toshkent
+C) Buxoro
+D) Nukus
+
+2. HTTPS protokoli asosan nimani ta’minlaydi?
+* A) Shifrlangan va himoyalangan aloqa
+B) Kompyuterni tezlashtirish
+C) Domenni avtomatik sotib olish
+D) Faqat rasm yuklash
+
+3. 2 + 2 nechaga teng?
+A) 3
++B) 4
+C) 5
+D) 6
