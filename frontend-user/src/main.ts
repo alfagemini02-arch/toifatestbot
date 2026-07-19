@@ -104,18 +104,27 @@ function applyTelegramTheme(): void {
   Object.entries(map).forEach(([key, css]) => { if (params[key]) document.documentElement.style.setProperty(css, params[key]); });
 }
 
+async function waitForTelegramInitData(): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const initData = window.Telegram?.WebApp?.initData || '';
+    if (initData) return initData;
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+  }
+  return '';
+}
+
 async function authenticate(): Promise<void> {
   if (token) {
     try { await api('/api/me'); return; } catch { token = ''; sessionStorage.removeItem('user_token'); }
   }
-  const initData = tg?.initData || '';
+  const initData = await waitForTelegramInitData();
   if (!initData) {
     const params = new URLSearchParams(location.search);
     if (params.get('dev') === '1') {
       const result = await api<{ access_token: string }>('/api/auth/dev', { method: 'POST', body: JSON.stringify({}) });
       token = result.access_token; sessionStorage.setItem('user_token', token); return;
     }
-    throw new Error("Mini App faqat Telegram bot ichidan ochilishi kerak. Avval botda /start ni bosing.");
+    throw new Error("Telegram initData kelmadi. Mini App'ni botdagi 'Testlarni boshlash' tugmasi yoki BotFather Menu Button orqali oching; oddiy link sifatida ochilsa foydalanuvchi aniqlanmaydi.");
   }
   const result = await api<{ access_token: string }>('/api/auth/telegram', {
     method: 'POST', body: JSON.stringify({ init_data: initData }),
