@@ -48,6 +48,19 @@ class QuestionInput(BaseModel):
         return self
 
 
+class QuestionMoveRequest(BaseModel):
+    question_ids: Annotated[list[int], Field(min_length=1, max_length=1000)]
+    target_source_id: int
+
+    @field_validator("question_ids")
+    @classmethod
+    def unique_question_ids(cls, question_ids: list[int]) -> list[int]:
+        unique_ids = list(dict.fromkeys(question_ids))
+        if any(question_id <= 0 for question_id in unique_ids):
+            raise ValueError("Savol ID noto'g'ri")
+        return unique_ids
+
+
 class TestRuleInput(BaseModel):
     source_id: int
     question_count: Annotated[int, Field(ge=1, le=500)]

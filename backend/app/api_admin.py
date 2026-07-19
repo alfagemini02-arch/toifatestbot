@@ -13,7 +13,7 @@ from .database import get_db
 from .deps import get_current_admin
 from .importers import ParsedQuestion, parse_uploaded_file
 from .models import Answer, Attempt, Question, Source, Test, TestRule
-from .schemas import ImportCommitRequest, QuestionInput, SourceCreate, SourceUpdate, TestInput
+from .schemas import ImportCommitRequest, QuestionInput, QuestionMoveRequest, SourceCreate, SourceUpdate, TestInput
 from .services import admin_dashboard_stats, serialize_question, serialize_test
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
@@ -182,6 +182,24 @@ def delete_question(question_id: int, db: Session = Depends(get_db)) -> dict:
     db.delete(question)
     db.commit()
     return {"deleted": True}
+
+
+@router.post("/questions/move")
+def move_questions(payload: QuestionMoveRequest, db: Session = Depends(get_db)) -> dict:
+    target_source = _source_or_404(db, payload.target_source_id)
+    questions = list(db.scalars(select(Question).where(Question.id.in_(payload.question_ids))))
+    found_ids = {question.id for question in questions}
+    missing = [question_id for question_id in payload.question_ids if question_id not in found_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"{len(missing)} ta savol topilmadi")
+
+    moved = 0
+    for question in questions:
+        if question.source_id != target_source.id:
+            question.source_id = target_source.id
+            moved += 1
+    db.commit()
+    return {"moved": moved, "target_source": {"id": target_source.id, "name": target_source.name}}
 
 
 @router.get("/search")
