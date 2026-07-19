@@ -1,4 +1,4 @@
-import './style.css';
+﻿import './style.css';
 
 type Source = { id: number; name: string; question_count: number; used_in_tests: number };
 type Answer = { id?: number; text: string; correct: boolean; position?: number };
@@ -14,6 +14,7 @@ let token = localStorage.getItem('admin_token') || '';
 let sourceCache: Source[] = [];
 let parsedImport: ParsedQuestion[] = [];
 let debounceTimer: number | undefined;
+let selectedQuestionIds = new Set<number>();
 
 function esc(value: unknown): string {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
@@ -108,18 +109,79 @@ function sourceModal(source?: Source): void {
 async function deleteSource(id: number): Promise<void> { if (!confirm('Manba va undagi barcha savollar o‘chirilsinmi?')) return; try { await api(`/api/admin/sources/${id}`, { method: 'DELETE' }); toast('🗑 Manba o‘chirildi'); await showSources(); } catch (error) { toast(error instanceof Error ? error.message : String(error), 'error'); } }
 
 async function showSource(sourceId: number, page = 1, search = ''): Promise<void> {
-  setTitle('Manba savollari', 'Savollarni qidirish va tahrirlash'); loading();
-  try { const data = await api<any>(`/api/admin/sources/${sourceId}/questions?page=${page}&search=${encodeURIComponent(search)}`); document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><a class="back-link" href="#sources">← Manbalar</a><h2>${esc(data.source.name)}</h2><span>${data.total} ta savol</span></div><div class="toolbar"><button class="secondary compact" id="source-import">📥 Import</button><button class="primary compact" id="new-question">+ Savol qo‘shish</button></div></div><div class="search-row"><input id="source-search" placeholder="Savol yoki javobdan qidirish…" value="${esc(search)}"></div><div class="question-list">${data.items.map((q: Question) => questionCard(q)).join('') || '<div class="empty-block">Savollar topilmadi</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
+  setTitle('Manba savollari', 'Savollarni qidirish va tahrirlash');
+  selectedQuestionIds = new Set<number>();
+  loading();
+  try {
+    const data = await api<any>(`/api/admin/sources/${sourceId}/questions?page=${page}&search=${encodeURIComponent(search)}`);
+    const refresh = () => showSource(sourceId, page, search);
+    document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><a class="back-link" href="#sources">← Manbalar</a><h2>${esc(data.source.name)}</h2><span>${data.total} ta savol</span></div><div class="toolbar"><button class="secondary compact" id="source-import">📥 Import</button><button class="secondary compact" id="move-selected" disabled>⇄ Ko‘chirish</button><button class="primary compact" id="new-question">+ Savol qo‘shish</button></div></div><div class="search-row"><input id="source-search" placeholder="Savol yoki javobdan qidirish…" value="${esc(search)}"></div><div class="bulk-line"><label><input id="select-page-questions" type="checkbox"> Sahifadagi savollarni tanlash</label><span id="selected-count">0 ta tanlandi</span></div><div class="question-list">${data.items.map((q: Question) => questionCard(q, true)).join('') || '<div class="empty-block">Savollar topilmadi</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
     document.querySelector('#new-question')?.addEventListener('click', () => questionModal(undefined, sourceId));
     document.querySelector('#source-import')?.addEventListener('click', () => { location.hash = `#import?source=${sourceId}`; });
-    bindQuestionActions(() => showSource(sourceId, page, search));
+    document.querySelector('#move-selected')?.addEventListener('click', () => moveSelectedQuestions(sourceId, refresh));
+    bindQuestionActions(refresh);
+    bindQuestionSelection();
+    document.querySelector<HTMLInputElement>('#select-page-questions')?.addEventListener('change', e => {
+      const checked = (e.target as HTMLInputElement).checked;
+      document.querySelectorAll<HTMLInputElement>('[data-select-question]').forEach(input => {
+        input.checked = checked;
+        const id = Number(input.dataset.selectQuestion);
+        if (checked) selectedQuestionIds.add(id); else selectedQuestionIds.delete(id);
+      });
+      updateSelectionState();
+    });
     document.querySelector<HTMLInputElement>('#source-search')!.addEventListener('input', e => { clearTimeout(debounceTimer); const value = (e.target as HTMLInputElement).value; debounceTimer = window.setTimeout(() => showSource(sourceId, 1, value), 300); });
-    document.querySelector('#prev-page')?.addEventListener('click', () => showSource(sourceId, page - 1, search)); document.querySelector('#next-page')?.addEventListener('click', () => showSource(sourceId, page + 1, search));
+    document.querySelector('#prev-page')?.addEventListener('click', () => showSource(sourceId, page - 1, search));
+    document.querySelector('#next-page')?.addEventListener('click', () => showSource(sourceId, page + 1, search));
   } catch (error) { showError(error); }
 }
-function questionCard(q: Question): string { const correct = q.answers.find(a => a.correct); return `<article class="question-item"><div class="question-head"><span class="source-badge">${esc(q.source_name)}</span><div class="actions"><button data-edit-question="${q.id}">✏️</button><button class="danger-icon" data-delete-question="${q.id}">🗑</button></div></div><h3>${esc(q.question_text)}</h3><p class="correct-answer">✅ ${esc(correct?.text || 'To‘g‘ri javob belgilanmagan')}</p><details><summary>Barcha variantlar (${q.answers.length})</summary>${q.answers.map(a => `<div class="answer-row ${a.correct ? 'correct' : ''}">${a.correct ? '✓' : '•'} ${esc(a.text)}</div>`).join('')}</details></article>`; }
-function bindQuestionActions(refresh: () => void): void { document.querySelectorAll<HTMLElement>('[data-edit-question]').forEach(b => b.addEventListener('click', async () => { try { const q = await api<Question>(`/api/admin/questions/${b.dataset.editQuestion}`); questionModal(q, q.source_id, refresh); } catch (e) { toast(String(e), 'error'); } })); document.querySelectorAll<HTMLElement>('[data-delete-question]').forEach(b => b.addEventListener('click', async () => { if (!confirm('Savol o‘chirilsinmi?')) return; try { await api(`/api/admin/questions/${b.dataset.deleteQuestion}`, { method: 'DELETE' }); toast('🗑 Savol o‘chirildi'); refresh(); } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error'); } })); }
-
+function questionCard(q: Question, selectable = false): string {
+  const correct = q.answers.find(a => a.correct);
+  const sourceBadge = `<span class="source-badge">${esc(q.source_name)}</span>`;
+  const selector = selectable ? `<label class="question-select"><input type="checkbox" data-select-question="${q.id}">${sourceBadge}</label>` : sourceBadge;
+  return `<article class="question-item"><div class="question-head">${selector}<div class="actions"><button data-edit-question="${q.id}">✏️</button><button class="danger-icon" data-delete-question="${q.id}">🗑</button></div></div><h3>${esc(q.question_text)}</h3><p class="correct-answer">✅ ${esc(correct?.text || 'To‘g‘ri javob belgilanmagan')}</p><details><summary>Barcha variantlar (${q.answers.length})</summary>${q.answers.map(a => `<div class="answer-row ${a.correct ? 'correct' : ''}">${a.correct ? '✓' : '•'} ${esc(a.text)}</div>`).join('')}</details></article>`;
+}
+function bindQuestionActions(refresh: () => void): void {
+  document.querySelectorAll<HTMLElement>('[data-edit-question]').forEach(b => b.addEventListener('click', async () => { try { const q = await api<Question>(`/api/admin/questions/${b.dataset.editQuestion}`); questionModal(q, q.source_id, refresh); } catch (e) { toast(String(e), 'error'); } }));
+  document.querySelectorAll<HTMLElement>('[data-delete-question]').forEach(b => b.addEventListener('click', async () => { if (!confirm('Savol o‘chirilsinmi?')) return; try { await api(`/api/admin/questions/${b.dataset.deleteQuestion}`, { method: 'DELETE' }); toast('🗑 Savol o‘chirildi'); refresh(); } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error'); } }));
+}
+function bindQuestionSelection(): void {
+  document.querySelectorAll<HTMLInputElement>('[data-select-question]').forEach(input => input.addEventListener('change', () => {
+    const id = Number(input.dataset.selectQuestion);
+    if (input.checked) selectedQuestionIds.add(id); else selectedQuestionIds.delete(id);
+    updateSelectionState();
+  }));
+}
+function updateSelectionState(): void {
+  const count = selectedQuestionIds.size;
+  const moveButton = document.querySelector<HTMLButtonElement>('#move-selected');
+  if (moveButton) moveButton.disabled = count === 0;
+  const counter = document.querySelector('#selected-count');
+  if (counter) counter.textContent = `${count} ta tanlandi`;
+}
+async function moveSelectedQuestions(currentSourceId: number, refresh: () => void): Promise<void> {
+  if (!selectedQuestionIds.size) return toast('Avval savollarni tanlang', 'error');
+  if (!sourceCache.length) await loadSources();
+  const targets = sourceCache.filter(source => source.id !== currentSourceId);
+  if (!targets.length) return toast('Ko‘chirish uchun boshqa manba yo‘q', 'error');
+  openModal(`<form id="move-form"><h2>Savollarni ko‘chirish</h2><p class="modal-hint">${selectedQuestionIds.size} ta savol boshqa manbaga o‘tkaziladi.</p><label>Yangi manba<select name="target_source_id">${targets.map(source => `<option value="${source.id}">${esc(source.name)} (${source.question_count})</option>`).join('')}</select></label><div class="modal-actions"><button type="button" class="ghost" data-close>Bekor qilish</button><button class="primary" type="submit">Ko‘chirish</button></div><div class="form-error" id="move-error"></div></form>`);
+  document.querySelector<HTMLFormElement>('#move-form')!.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = (event.currentTarget as HTMLFormElement).querySelector<HTMLButtonElement>('button[type=submit]')!;
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    button.disabled = true;
+    try {
+      const result = await api<any>('/api/admin/questions/move', { method: 'POST', body: JSON.stringify({ question_ids: [...selectedQuestionIds], target_source_id: Number(form.get('target_source_id')) }) });
+      closeModal();
+      sourceCache = [];
+      toast(`✅ ${result.moved} ta savol ko‘chirildi`);
+      refresh();
+    } catch (error) {
+      document.querySelector('#move-error')!.textContent = error instanceof Error ? error.message : String(error);
+      button.disabled = false;
+    }
+  });
+}
 async function questionModal(question?: Question, defaultSourceId?: number, refresh?: () => void): Promise<void> {
   if (!sourceCache.length) await loadSources(); const answers = question?.answers.length ? question.answers : [{ text: '', correct: true }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }];
   openModal(`<form id="question-form" class="wide-modal"><h2>${question ? 'Savolni tahrirlash' : 'Yangi savol'}</h2><label>Manba<select name="source_id">${sourceCache.map(s => `<option value="${s.id}" ${s.id === (question?.source_id || defaultSourceId) ? 'selected' : ''}>${esc(s.name)} (${s.question_count})</option>`).join('')}</select></label><label>Savol matni<textarea name="question_text" rows="4" required>${esc(question?.question_text || '')}</textarea></label><div class="field-label">Javob variantlari</div><div id="answer-editor">${answers.map((a, i) => answerEditorRow(a, i)).join('')}</div><button type="button" class="secondary compact" id="add-answer">+ Variant qo‘shish</button><div class="form-error" id="question-error"></div><div class="modal-actions"><button type="button" class="ghost" data-close>Bekor qilish</button><button class="primary" type="submit">💾 Saqlash</button></div></form>`);
@@ -160,11 +222,61 @@ async function showImport(): Promise<void> {
   document.querySelector<HTMLInputElement>('input[type=file]')!.addEventListener('change', e => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) document.querySelector('#drop-zone strong')!.textContent = f.name; });
   document.querySelector<HTMLFormElement>('#import-form')!.addEventListener('submit', async e => { e.preventDefault(); const fd = new FormData(e.currentTarget as HTMLFormElement); const sourceId = fd.get('source_id'); if (!sourceId) fd.delete('source_id'); try { document.querySelector('#import-preview')!.innerHTML = '<div class="loading"><div class="spinner"></div><p>Tahlil qilinmoqda…</p></div>'; const result = await api<any>('/api/admin/import/parse', { method: 'POST', body: fd }); parsedImport = result.parsed; renderImportPreview(result.stats, fd); } catch (error) { showError(error, '#import-preview'); } });
 }
-function renderImportPreview(stats: any, formData: FormData): void { const preview = document.querySelector('#import-preview')!; preview.innerHTML = `<div class="import-stats"><span>Jami <strong>${stats.total}</strong></span><span class="good">Yaroqli <strong>${stats.valid}</strong></span><span class="bad">Muammoli <strong>${stats.problematic}</strong></span><span>Takroriy <strong>${stats.duplicates_in_database + stats.duplicates_in_file}</strong></span></div><div class="preview-actions"><label><input id="skip-duplicates" type="checkbox" checked> Takroriylarni tashlab ketish</label><button class="primary compact" id="commit-import">✅ Importni tasdiqlash</button></div><div class="preview-list">${parsedImport.map((q, i) => `<article class="preview-item ${q.valid ? '' : 'invalid'}"><div><strong>${i + 1}. ${esc(q.question)}</strong><small>${q.source_name ? `[${esc(q.source_name)}] · ` : ''}${q.answers.length} ta variant · ${q.answers.find(a => a.correct) ? `To‘g‘ri: ${esc(q.answers.find(a => a.correct)!.text)}` : 'To‘g‘ri javob yo‘q'}</small>${q.problems.length ? `<em>${esc(q.problems.join('; '))}</em>` : ''}${q.duplicate_in_database || q.duplicate_in_file ? '<em>Takroriy savol</em>' : ''}</div><span>${q.valid ? '✅' : '⚠️'}</span></article>`).join('')}</div>`;
-  document.querySelector('#commit-import')?.addEventListener('click', async () => { const sourceId = formData.get('source_id'); const dbMode = formData.get('db_mode'); const newName = String(formData.get('new_source_name') || ''); const payload = { source_id: sourceId ? Number(sourceId) : null, new_source_name: newName || null, create_sources_from_file: dbMode === 'full', skip_duplicates: (document.querySelector<HTMLInputElement>('#skip-duplicates')!).checked, questions: parsedImport }; try { const result = await api<any>('/api/admin/import/commit', { method: 'POST', body: JSON.stringify(payload) }); toast(`✅ ${result.added} ta qo‘shildi, ${result.skipped} ta o‘tkazib yuborildi`); showImport(); } catch (e) { toast(e instanceof Error ? e.message : String(e), 'error'); } }); }
-
+function renderImportPreview(stats: any, formData: FormData): void {
+  const preview = document.querySelector('#import-preview')!;
+  preview.innerHTML = `<div class="import-stats"><span>Jami <strong>${stats.total}</strong></span><span class="good">Yaroqli <strong>${stats.valid}</strong></span><span class="bad">Muammoli <strong>${stats.problematic}</strong></span><span>Takroriy <strong>${stats.duplicates_in_database + stats.duplicates_in_file}</strong></span></div><div class="preview-actions"><label><input id="skip-duplicates" type="checkbox" checked> Takroriylarni tashlab ketish</label><button class="primary compact" id="commit-import">✅ Importni tasdiqlash</button></div><div id="import-progress"></div><div class="preview-list">${parsedImport.map((q, i) => `<article class="preview-item ${q.valid ? '' : 'invalid'}"><div><strong>${i + 1}. ${esc(q.question)}</strong><small>${q.source_name ? `[${esc(q.source_name)}] · ` : ''}${q.answers.length} ta variant · ${q.answers.find(a => a.correct) ? `To‘g‘ri: ${esc(q.answers.find(a => a.correct)!.text)}` : 'To‘g‘ri javob yo‘q'}</small>${q.problems.length ? `<em>${esc(q.problems.join('; '))}</em>` : ''}${q.duplicate_in_database || q.duplicate_in_file ? '<em>Takroriy savol</em>' : ''}</div><span>${q.valid ? '✅' : '⚠️'}</span></article>`).join('')}</div>`;
+  document.querySelector('#commit-import')?.addEventListener('click', () => commitImportWithProgress(formData));
+}
+function renderImportProgress(done: number, total: number, added: number, skipped: number, active = true): void {
+  const percent = total ? Math.round(done * 100 / total) : 100;
+  const target = document.querySelector('#import-progress');
+  if (!target) return;
+  target.innerHTML = `<div class="import-progress-card ${active ? 'active' : 'done'}"><div class="progress-orbit"><div class="progress-ring" style="--progress:${percent}"><strong>${percent}%</strong></div></div><div class="progress-copy"><h3>${active ? 'Savollar yuklanmoqda' : 'Import yakunlandi'}</h3><p>${done}/${total} ta savol qayta ishlandi</p><div class="progress-bar"><span style="width:${percent}%"></span></div><small>Qo‘shildi: ${added} ta · O‘tkazildi: ${skipped} ta</small></div></div>`;
+}
+async function commitImportWithProgress(formData: FormData): Promise<void> {
+  if (!parsedImport.length) return toast('Import qilinadigan savol yo‘q', 'error');
+  const button = document.querySelector<HTMLButtonElement>('#commit-import');
+  const skipInput = document.querySelector<HTMLInputElement>('#skip-duplicates')!;
+  const sourceId = formData.get('source_id');
+  const dbMode = formData.get('db_mode');
+  const newName = String(formData.get('new_source_name') || '');
+  const chunkSize = 100;
+  let added = 0;
+  let skipped = 0;
+  let processed = 0;
+  if (button) { button.disabled = true; button.textContent = 'Import qilinmoqda...'; }
+  skipInput.disabled = true;
+  renderImportProgress(0, parsedImport.length, 0, 0);
+  try {
+    for (let index = 0; index < parsedImport.length; index += chunkSize) {
+      const chunk = parsedImport.slice(index, index + chunkSize);
+      const payload = {
+        source_id: sourceId ? Number(sourceId) : null,
+        new_source_name: newName || null,
+        create_sources_from_file: dbMode === 'full',
+        skip_duplicates: skipInput.checked,
+        questions: chunk,
+      };
+      const result = await api<any>('/api/admin/import/commit', { method: 'POST', body: JSON.stringify(payload) });
+      added += Number(result.added || 0);
+      skipped += Number(result.skipped || 0);
+      processed += chunk.length;
+      renderImportProgress(processed, parsedImport.length, added, skipped);
+      await new Promise(resolve => window.setTimeout(resolve, 80));
+    }
+    renderImportProgress(parsedImport.length, parsedImport.length, added, skipped, false);
+    toast(`✅ ${added} ta qo‘shildi, ${skipped} ta o‘tkazib yuborildi`);
+    window.setTimeout(() => showImport(), 900);
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 'error');
+    if (button) { button.disabled = false; button.textContent = '✅ Importni tasdiqlash'; }
+    skipInput.disabled = false;
+  }
+}
 function openModal(content: string): void { modalRoot.innerHTML = `<div class="modal-backdrop"><div class="modal">${content}</div></div>`; modalRoot.querySelectorAll('[data-close]').forEach(el => el.addEventListener('click', closeModal)); modalRoot.querySelector('.modal-backdrop')?.addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); }); }
 function closeModal(): void { modalRoot.innerHTML = ''; }
 function showError(error: unknown, selector = '#content'): void { const message = error instanceof Error ? error.message : String(error); document.querySelector(selector)!.innerHTML = `<div class="error-box"><strong>⚠️ Xatolik</strong><p>${esc(message)}</p><button class="ghost compact" onclick="location.reload()">Qayta yuklash</button></div>`; }
 
 if (token) showShell(); else showLogin();
+
+
