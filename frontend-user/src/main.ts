@@ -117,14 +117,17 @@ async function authenticate(): Promise<void> {
   if (token) {
     try { await api('/api/me'); return; } catch { token = ''; sessionStorage.removeItem('user_token'); }
   }
+  const params = new URLSearchParams(location.search);
+  const webappToken = params.get('tg_login') || '';
+  const loginWithWebappToken = async (): Promise<void> => {
+    const result = await api<{ access_token: string }>('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ webapp_token: webappToken }) });
+    token = result.access_token; sessionStorage.setItem('user_token', token);
+    history.replaceState(null, '', `${location.pathname}${location.hash}`);
+  };
   const initData = await waitForTelegramInitData();
   if (!initData) {
-    const params = new URLSearchParams(location.search);
-    const webappToken = params.get('tg_login') || '';
     if (webappToken) {
-      const result = await api<{ access_token: string }>('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ webapp_token: webappToken }) });
-      token = result.access_token; sessionStorage.setItem('user_token', token);
-      history.replaceState(null, '', `${location.pathname}${location.hash}`);
+      await loginWithWebappToken();
       return;
     }
     if (params.get('dev') === '1') {
@@ -133,11 +136,16 @@ async function authenticate(): Promise<void> {
     }
     throw new Error("Telegram initData kelmadi. Mini App'ni botdagi 'Testlarni boshlash' tugmasi yoki BotFather Menu Button orqali oching; oddiy link sifatida ochilsa foydalanuvchi aniqlanmaydi.");
   }
-  const result = await api<{ access_token: string }>('/api/auth/telegram', {
-    method: 'POST', body: JSON.stringify({ init_data: initData }),
-  });
-  token = result.access_token;
-  sessionStorage.setItem('user_token', token);
+  try {
+    const result = await api<{ access_token: string }>('/api/auth/telegram', {
+      method: 'POST', body: JSON.stringify({ init_data: initData }),
+    });
+    token = result.access_token;
+    sessionStorage.setItem('user_token', token);
+  } catch (error) {
+    if (!webappToken) throw error;
+    await loginWithWebappToken();
+  }
 }
 
 function loading(text = 'Yuklanmoqda...'): void {
