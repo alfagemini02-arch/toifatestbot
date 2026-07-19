@@ -256,7 +256,7 @@ function reportCurrentQuestion(question: AttemptQuestion): void {
     const message = String(form.get('message') || '').trim();
     const button = (event.currentTarget as HTMLFormElement).querySelector<HTMLButtonElement>('button[type=submit]')!;
     if (message.length < 3) {
-      document.querySelector('#report-error')!.textContent = 'Izoh kamida 3 ta belgidan iborat bo'lishi kerak';
+      document.querySelector('#report-error')!.textContent = "Izoh kamida 3 ta belgidan iborat bo'lishi kerak";
       return;
     }
     button.disabled = true;
