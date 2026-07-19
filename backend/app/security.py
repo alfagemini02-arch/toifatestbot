@@ -75,7 +75,6 @@ def validate_telegram_init_data(init_data: str, max_age_seconds: int | None = No
 
     pairs = dict(parse_qsl(init_data, keep_blank_values=True))
     received_hash = pairs.pop("hash", None)
-    pairs.pop("signature", None)
     if not received_hash:
         raise HTTPException(status_code=401, detail="Telegram imzosi mavjud emas")
 
