@@ -185,13 +185,13 @@ async function moveSelectedQuestions(currentSourceId: number, refresh: () => voi
     }
   });
 }
-async function questionModal(question?: Question, defaultSourceId?: number, refresh?: () => void): Promise<void> {
+async function questionModal(question?: Question, defaultSourceId?: number, refresh?: () => void | Promise<void>): Promise<void> {
   if (!sourceCache.length) await loadSources(); const answers = question?.answers.length ? question.answers : [{ text: '', correct: true }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }];
   openModal(`<form id="question-form" class="wide-modal"><h2>${question ? 'Savolni tahrirlash' : 'Yangi savol'}</h2><label>Manba<select name="source_id">${sourceCache.map(s => `<option value="${s.id}" ${s.id === (question?.source_id || defaultSourceId) ? 'selected' : ''}>${esc(s.name)} (${s.question_count})</option>`).join('')}</select></label><label>Savol matni<textarea name="question_text" rows="4" required>${esc(question?.question_text || '')}</textarea></label><div class="field-label">Javob variantlari</div><div id="answer-editor">${answers.map((a, i) => answerEditorRow(a, i)).join('')}</div><button type="button" class="secondary compact" id="add-answer">+ Variant qo‘shish</button><div class="form-error" id="question-error"></div><div class="modal-actions"><button type="button" class="ghost" data-close>Bekor qilish</button><button class="primary" type="submit">💾 Saqlash</button></div></form>`);
   const editor = document.querySelector('#answer-editor')!; const reindex = () => editor.querySelectorAll<HTMLElement>('.answer-editor-row').forEach((row, i) => { row.querySelector<HTMLInputElement>('input[type=radio]')!.value = String(i); row.querySelector<HTMLElement>('.answer-letter')!.textContent = String.fromCharCode(65 + i); });
   document.querySelector('#add-answer')?.addEventListener('click', () => { const div = document.createElement('div'); div.innerHTML = answerEditorRow({ text: '', correct: false }, editor.children.length); editor.append(div.firstElementChild!); bindAnswerDeletes(); });
   const bindAnswerDeletes = () => document.querySelectorAll<HTMLElement>('[data-remove-answer]').forEach(b => b.onclick = () => { if (editor.children.length <= 2) return toast('Kamida 2 ta variant bo‘lishi kerak', 'error'); b.closest('.answer-editor-row')?.remove(); reindex(); }); bindAnswerDeletes();
-  document.querySelector<HTMLFormElement>('#question-form')!.addEventListener('submit', async e => { e.preventDefault(); const form = new FormData(e.currentTarget as HTMLFormElement); const rows = [...editor.querySelectorAll<HTMLElement>('.answer-editor-row')]; const correctIndex = Number(form.get('correct_index')); const payload = { source_id: Number(form.get('source_id')), question_text: String(form.get('question_text')), answers: rows.map((row, i) => ({ text: row.querySelector<HTMLInputElement>('input[type=text]')!.value, correct: i === correctIndex })) }; try { await api(`/api/admin/questions${question ? `/${question.id}` : ''}`, { method: question ? 'PUT' : 'POST', body: JSON.stringify(payload) }); closeModal(); toast('✅ Savol saqlandi'); refresh ? refresh() : showSource(payload.source_id); } catch (error) { document.querySelector('#question-error')!.textContent = error instanceof Error ? error.message : String(error); } });
+  document.querySelector<HTMLFormElement>('#question-form')!.addEventListener('submit', async e => { e.preventDefault(); const form = new FormData(e.currentTarget as HTMLFormElement); const rows = [...editor.querySelectorAll<HTMLElement>('.answer-editor-row')]; const correctIndex = Number(form.get('correct_index')); const payload = { source_id: Number(form.get('source_id')), question_text: String(form.get('question_text')), answers: rows.map((row, i) => ({ text: row.querySelector<HTMLInputElement>('input[type=text]')!.value, correct: i === correctIndex })) }; try { await api(`/api/admin/questions${question ? `/${question.id}` : ''}`, { method: question ? 'PUT' : 'POST', body: JSON.stringify(payload) }); closeModal(); toast('✅ Savol saqlandi'); refresh ? await refresh() : await showSource(payload.source_id); } catch (error) { document.querySelector('#question-error')!.textContent = error instanceof Error ? error.message : String(error); } });
 }
 function answerEditorRow(a: Answer, i: number): string { return `<div class="answer-editor-row"><span class="answer-letter">${String.fromCharCode(65 + i)}</span><input type="radio" name="correct_index" value="${i}" ${a.correct ? 'checked' : ''} title="To‘g‘ri javob"><input type="text" value="${esc(a.text)}" placeholder="Javob matni" required><button type="button" class="danger-icon" data-remove-answer>×</button></div>`; }
 
@@ -220,14 +220,19 @@ async function showReports(status = 'open', page = 1): Promise<void> {
 
 function reportCard(report: ErrorReport): string {
   const answers = report.answers?.length ? report.answers.map(answer => `<div class="answer-row ${answer.correct ? 'correct' : ''}">${answer.correct ? '✓' : '•'} ${esc(answer.text)}</div>`).join('') : '<div class="answer-row">Javob variantlari saqlanmagan</div>';
-  return `<article class="report-card ${report.status === 'fixed' ? 'fixed' : ''}"><div class="report-head"><div><span class="status ${report.status === 'fixed' ? 'active' : 'inactive'}">${report.status === 'fixed' ? 'Yopilgan' : 'Ochiq'}</span><h3>${esc(report.question_text || 'Savol o‘chirilgan')}</h3><small>${esc(report.source_name || 'Manba noma’lum')} · ${new Date(report.created_at).toLocaleString('uz-UZ')}</small></div><div class="actions">${report.question ? `<button data-edit-report-question="${report.question_id}">✏️</button><button class="danger-icon" data-delete-report-question="${report.question_id}">🗑</button>` : ''}<button data-fix-report="${report.id}" ${report.status === 'fixed' ? 'disabled' : ''}>✓</button><button class="danger-icon" data-delete-report="${report.id}">×</button></div></div><div class="report-meta"><strong>${esc(report.user.full_name || 'Foydalanuvchi')}</strong><span>${report.user.phone ? esc(report.user.phone) : ''}${report.user.username ? ` · @${esc(report.user.username)}` : ''}${report.user.telegram_id ? ` · ID ${report.user.telegram_id}` : ''}</span></div><blockquote>${esc(report.message_text || 'Izoh yozilmagan')}</blockquote><details><summary>Javob variantlari</summary>${answers}</details></article>`;
+  return `<article class="report-card ${report.status === 'fixed' ? 'fixed' : ''}" data-report-id="${report.id}"><div class="report-head"><div><span class="status ${report.status === 'fixed' ? 'active' : 'inactive'}">${report.status === 'fixed' ? 'Yopilgan' : 'Ochiq'}</span><h3>${esc(report.question_text || 'Savol o‘chirilgan')}</h3><small>${esc(report.source_name || 'Manba noma’lum')} · ${new Date(report.created_at).toLocaleString('uz-UZ')}</small></div><div class="actions">${report.question ? `<button data-edit-report-question="${report.question_id}">✏️</button><button class="danger-icon" data-delete-report-question="${report.question_id}">🗑</button>` : ''}<button class="secondary compact no-issue" data-fix-report="${report.id}" ${report.status === 'fixed' ? 'disabled' : ''}>Muammo yo'q</button><button class="danger-icon" data-delete-report="${report.id}">×</button></div></div><div class="report-meta"><strong>${esc(report.user.full_name || 'Foydalanuvchi')}</strong><span>${report.user.phone ? esc(report.user.phone) : ''}${report.user.username ? ` · @${esc(report.user.username)}` : ''}${report.user.telegram_id ? ` · ID ${report.user.telegram_id}` : ''}</span></div><blockquote>${esc(report.message_text || 'Izoh yozilmagan')}</blockquote><details><summary>Javob variantlari</summary>${answers}</details></article>`;
 }
 
 function bindReportActions(refresh: () => void): void {
   document.querySelectorAll<HTMLElement>('[data-edit-report-question]').forEach(button => button.addEventListener('click', async () => {
     try {
+      const reportId = Number(button.closest<HTMLElement>('[data-report-id]')?.dataset.reportId || 0);
       const question = await api<Question>(`/api/admin/questions/${button.dataset.editReportQuestion}`);
-      questionModal(question, question.source_id, refresh);
+      questionModal(question, question.source_id, async () => {
+        if (reportId) await api(`/api/admin/reports/${reportId}`, { method: 'DELETE' });
+        toast('Savol tuzatildi va xatolik xabari olib tashlandi');
+        refresh();
+      });
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error');
     }
@@ -235,8 +240,10 @@ function bindReportActions(refresh: () => void): void {
   document.querySelectorAll<HTMLElement>('[data-delete-report-question]').forEach(button => button.addEventListener('click', async () => {
     if (!confirm('Savol manba ichidan ham o‘chirilsinmi?')) return;
     try {
+      const reportId = Number(button.closest<HTMLElement>('[data-report-id]')?.dataset.reportId || 0);
       await api(`/api/admin/questions/${button.dataset.deleteReportQuestion}`, { method: 'DELETE' });
-      toast('Savol o‘chirildi');
+      if (reportId) await api(`/api/admin/reports/${reportId}`, { method: 'DELETE' });
+      toast("Savol va xatolik xabari o'chirildi");
       refresh();
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error');
@@ -244,8 +251,8 @@ function bindReportActions(refresh: () => void): void {
   }));
   document.querySelectorAll<HTMLElement>('[data-fix-report]').forEach(button => button.addEventListener('click', async () => {
     try {
-      await api(`/api/admin/reports/${button.dataset.fixReport}/status`, { method: 'PUT', body: JSON.stringify({ status: 'fixed' }) });
-      toast('Xatolik yopildi');
+      await api(`/api/admin/reports/${button.dataset.fixReport}`, { method: 'DELETE' });
+      toast("Xatolik xabari olib tashlandi");
       refresh();
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error');
