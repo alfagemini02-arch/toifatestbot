@@ -29,6 +29,18 @@ def _run_lightweight_migrations() -> None:
                 if column_name not in existing:
                     connection.execute(text(f"ALTER TABLE error_reports ADD COLUMN {column_name} {column_type}"))
 
+    if "source_questions" in table_names:
+        existing_questions = {column["name"] for column in inspector.get_columns("source_questions")}
+        question_additions = {
+            "topic": "VARCHAR(255)",
+            "difficulty": "VARCHAR(20) NOT NULL DEFAULT 'medium'",
+            "explanation": "TEXT",
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in question_additions.items():
+                if column_name not in existing_questions:
+                    connection.execute(text(f"ALTER TABLE source_questions ADD COLUMN {column_name} {column_type}"))
+
     if {"attempts", "attempt_questions", "tests", "test_attempt_stats"}.issubset(table_names):
         with engine.begin() as connection:
             connection.execute(

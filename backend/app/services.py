@@ -25,6 +25,9 @@ def serialize_question(question: Question) -> dict[str, Any]:
         "source_id": question.source_id,
         "source_name": question.source.name if question.source else None,
         "question_text": question.question_text,
+        "topic": question.topic,
+        "difficulty": question.difficulty,
+        "explanation": question.explanation,
         "answers": [
             {"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct, "position": answer.position}
             for answer in question.answers
@@ -187,10 +190,12 @@ def submit_answer(db: Session, attempt: Attempt, question_id: int, answer_id: in
     if item.is_correct:
         attempt.correct_count += 1
     db.commit()
+    source_question = db.scalar(select(Question).where(Question.id == item.question_id)) if item.question_id else None
     return {
         "is_correct": item.is_correct,
         "correct_answer_id": int(correct_answer["id"]),
         "selected_answer_id": answer_id,
+        "explanation": source_question.explanation if source_question else None,
     }
 
 
@@ -204,6 +209,23 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
     percentage = round((correct / total) * 100) if total else 0
     finished_at = as_utc(attempt.finished_at) if attempt.finished_at else datetime.now(timezone.utc)
     spent_seconds = int((finished_at - as_utc(attempt.started_at)).total_seconds())
+    question_ids = [item.question_id for item in attempt.questions if item.question_id]
+    source_questions = {
+        question.id: question
+        for question in db.scalars(select(Question).where(Question.id.in_(question_ids)))
+    } if question_ids else {}
+    topic_map: dict[str, dict[str, int]] = {}
+    for item in attempt.questions:
+        question = source_questions.get(item.question_id or 0)
+        topic = (question.topic if question and question.topic else "Umumiy").strip() or "Umumiy"
+        row = topic_map.setdefault(topic, {"total": 0, "correct": 0})
+        row["total"] += 1
+        if item.is_correct:
+            row["correct"] += 1
+    topic_stats = [
+        {"topic": topic, "total": values["total"], "correct": values["correct"], "percentage": round(values["correct"] * 100 / values["total"]) if values["total"] else 0}
+        for topic, values in sorted(topic_map.items())
+    ]
     result = {
         "attempt_id": attempt.id,
         "test_name": attempt.test.name,
@@ -214,6 +236,7 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
         "unanswered": total - answered,
         "percentage": percentage,
         "spent_seconds": max(0, spent_seconds),
+        "topic_stats": topic_stats,
     }
     db.add(
         TestAttemptStat(

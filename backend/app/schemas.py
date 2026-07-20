@@ -37,6 +37,9 @@ class AnswerInput(BaseModel):
 class QuestionInput(BaseModel):
     source_id: int
     question_text: Annotated[str, Field(min_length=2, max_length=20000)]
+    topic: Annotated[str | None, Field(max_length=255)] = None
+    difficulty: Annotated[str, Field(pattern="^(easy|medium|hard)$")] = "medium"
+    explanation: Annotated[str | None, Field(max_length=20000)] = None
     answers: Annotated[list[AnswerInput], Field(min_length=2, max_length=20)]
 
     @model_validator(mode="after")

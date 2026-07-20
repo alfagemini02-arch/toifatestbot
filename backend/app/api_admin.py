@@ -215,11 +215,15 @@ def delete_source(source_id: int, db: Session = Depends(get_db)) -> dict:
 def source_questions(
     source_id: int,
     search: str = "",
+    topic: str = "",
+    difficulty: str = "",
+    answer_count: int | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    page_size: Annotated[int, Query(ge=0, le=5000)] = 20,
     db: Session = Depends(get_db),
 ) -> dict:
     source = _source_or_404(db, source_id)
+    answer_count_subquery = select(func.count(Answer.id)).where(Answer.question_id == Question.id).correlate(Question).scalar_subquery()
     query = select(Question).options(selectinload(Question.answers), selectinload(Question.source)).where(Question.source_id == source_id)
     count_query = select(func.count(func.distinct(Question.id))).select_from(Question).outerjoin(Answer).where(Question.source_id == source_id)
     if search.strip():
@@ -227,17 +231,37 @@ def source_questions(
         condition = or_(Question.question_text.ilike(pattern), Answer.answer_text.ilike(pattern))
         query = query.outerjoin(Answer).where(condition).distinct()
         count_query = count_query.where(condition)
+    if topic.strip():
+        query = query.where(Question.topic == topic.strip())
+        count_query = count_query.where(Question.topic == topic.strip())
+    if difficulty.strip():
+        query = query.where(Question.difficulty == difficulty.strip())
+        count_query = count_query.where(Question.difficulty == difficulty.strip())
+    if answer_count:
+        query = query.where(answer_count_subquery == answer_count)
+        count_query = count_query.where(answer_count_subquery == answer_count)
     total = db.scalar(count_query) or 0
-    questions = list(
-        db.scalars(query.order_by(Question.id.desc()).offset((page - 1) * page_size).limit(page_size)).unique()
-    )
+    ordered = query.order_by(Question.id.desc())
+    if page_size:
+        ordered = ordered.offset((page - 1) * page_size).limit(page_size)
+    questions = list(db.scalars(ordered).unique())
+    topics = [value for value in db.scalars(select(Question.topic).where(Question.source_id == source_id, Question.topic.is_not(None)).distinct().order_by(Question.topic))]
+    answer_count_rows = db.execute(
+        select(func.count(Answer.id).label("answer_count"))
+        .select_from(Question)
+        .join(Answer, Answer.question_id == Question.id)
+        .where(Question.source_id == source_id)
+        .group_by(Question.id)
+    ).all()
+    answer_counts = sorted({row[0] for row in answer_count_rows})
     return {
         "source": {"id": source.id, "name": source.name},
         "items": [serialize_question(question) for question in questions],
         "page": page,
         "page_size": page_size,
         "total": total,
-        "pages": max(1, (total + page_size - 1) // page_size),
+        "pages": 1 if not page_size else max(1, (total + page_size - 1) // page_size),
+        "filters": {"topics": topics, "difficulties": ["easy", "medium", "hard"], "answer_counts": answer_counts},
     }
 
 
@@ -303,7 +327,13 @@ def get_question(question_id: int, db: Session = Depends(get_db)) -> dict:
 @router.post("/questions", status_code=201)
 def create_question(payload: QuestionInput, db: Session = Depends(get_db)) -> dict:
     _source_or_404(db, payload.source_id)
-    question = Question(source_id=payload.source_id, question_text=payload.question_text.strip())
+    question = Question(
+        source_id=payload.source_id,
+        question_text=payload.question_text.strip(),
+        topic=payload.topic.strip() if payload.topic else None,
+        difficulty=payload.difficulty,
+        explanation=payload.explanation.strip() if payload.explanation else None,
+    )
     db.add(question)
     db.flush()
     for position, answer in enumerate(payload.answers):
@@ -318,6 +348,9 @@ def update_question(question_id: int, payload: QuestionInput, db: Session = Depe
     _source_or_404(db, payload.source_id)
     question.source_id = payload.source_id
     question.question_text = payload.question_text.strip()
+    question.topic = payload.topic.strip() if payload.topic else None
+    question.difficulty = payload.difficulty
+    question.explanation = payload.explanation.strip() if payload.explanation else None
     db.execute(delete(Answer).where(Answer.question_id == question.id))
     for position, answer in enumerate(payload.answers):
         db.add(Answer(question_id=question.id, answer_text=answer.text.strip(), is_correct=answer.correct, position=position))
@@ -454,11 +487,8 @@ def update_test(test_id: int, payload: TestInput, db: Session = Depends(get_db))
 @router.delete("/tests/{test_id}")
 def delete_test(test_id: int, db: Session = Depends(get_db)) -> dict:
     test = _test_or_404(db, test_id)
-    attempts = db.scalar(select(func.count(Attempt.id)).where(Attempt.test_id == test_id)) or 0
-    if attempts:
-        test.is_active = False
-        db.commit()
-        return {"deleted": False, "deactivated": True, "detail": "Tarixiy urinishlar borligi uchun test nofaol qilindi"}
+    db.execute(delete(Attempt).where(Attempt.test_id == test_id))
+    db.execute(delete(TestAttemptStat).where(TestAttemptStat.test_id == test_id))
     db.delete(test)
     db.commit()
     return {"deleted": True}

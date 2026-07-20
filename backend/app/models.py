@@ -56,6 +56,9 @@ class Question(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True, nullable=False)
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     question_type: Mapped[str] = mapped_column(String(40), default="multiple_choice", nullable=False)
+    topic: Mapped[str | None] = mapped_column(String(255), index=True)
+    difficulty: Mapped[str] = mapped_column(String(20), default="medium", index=True, nullable=False)
+    explanation: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

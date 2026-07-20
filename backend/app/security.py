@@ -78,9 +78,17 @@ def validate_telegram_init_data(init_data: str, max_age_seconds: int | None = No
     if not received_hash:
         raise HTTPException(status_code=401, detail="Telegram imzosi mavjud emas")
 
-    data_check_string = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
     secret_key = hmac.new(b"WebAppData", settings.bot_token.encode(), hashlib.sha256).digest()
-    calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    def calculate_hash(values: dict[str, str]) -> str:
+        data_check_string = "\n".join(f"{key}={values[key]}" for key in sorted(values))
+        return hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    calculated_hash = calculate_hash(pairs)
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        legacy_pairs = dict(pairs)
+        legacy_pairs.pop("signature", None)
+        calculated_hash = calculate_hash(legacy_pairs)
 
     if not hmac.compare_digest(calculated_hash, received_hash):
         raise HTTPException(status_code=401, detail="Telegram initData imzosi noto'g'ri")
