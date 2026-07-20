@@ -31,6 +31,7 @@ type AttemptQuestion = {
   answers: Answer[];
   selected_answer_id: number | null;
   is_correct: boolean | null;
+  checking_answer_id?: number | null;
 };
 type Attempt = {
   id: number;
@@ -215,7 +216,9 @@ function startTimer(initial: number | null): void {
   const update = () => {
     const element = document.querySelector<HTMLElement>('#timer');
     if (!element) return;
-    element.textContent = formatTime(Math.max(0, remaining));
+    const safeRemaining = Math.max(0, remaining);
+    if (currentAttempt) currentAttempt.remaining_seconds = safeRemaining;
+    element.textContent = formatTime(safeRemaining);
     element.classList.toggle('danger', remaining <= 300);
     if (remaining <= 0) { clearTimer(); void finishTest(true); }
     remaining -= 1;
@@ -228,6 +231,7 @@ function renderAttempt(): void {
   setBack(() => void confirmLeave());
   const question = currentAttempt.questions[currentIndex];
   const answered = currentAttempt.questions.filter(q => q.selected_answer_id !== null).length;
+  const isLocked = question.selected_answer_id !== null || question.checking_answer_id != null;
   const explanation = question.selected_answer_id !== null && question.explanation ? `<div class="answer-explanation"><strong>Tushuntirish</strong><p>${escapeHtml(question.explanation)}</p></div>` : '';
   app.innerHTML = `<main class="test-page">
     <header class="test-header"><div><span class="eyebrow">Test</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
@@ -237,8 +241,11 @@ function renderAttempt(): void {
       if (question.selected_answer_id !== null) {
         if (answer.correct) cls = 'correct';
         else if (answer.id === question.selected_answer_id) cls = 'wrong';
+        else cls = 'dimmed';
+      } else if (question.checking_answer_id === answer.id) {
+        cls = 'checking';
       }
-      return `<button class="answer ${cls}" data-answer-id="${answer.id}" ${question.selected_answer_id !== null ? 'disabled' : ''}><span>${String.fromCharCode(65 + index)}</span><b>${escapeHtml(answer.text)}</b></button>`;
+      return `<button class="answer ${cls}" data-answer-id="${answer.id}" ${isLocked ? 'disabled' : ''}><span>${String.fromCharCode(65 + index)}</span><b>${escapeHtml(answer.text)}</b></button>`;
     }).join('')}</div>${explanation}<button class="report-question" id="report-question" type="button">Savolda muammo bor</button></article><div class="pager"><button class="ghost" id="prev" ${currentIndex === 0 ? 'disabled' : ''}>Oldingi</button><button class="ghost" id="next" ${currentIndex === currentAttempt.questions.length - 1 ? 'disabled' : ''}>Keyingi</button></div><div class="finish-row"><button class="finish finish-inline" id="finish">Testni yakunlash</button></div></section>
   </main>`;
   startTimer(currentAttempt.remaining_seconds);
@@ -286,14 +293,16 @@ function reportCurrentQuestion(question: AttemptQuestion): void {
 async function answerCurrent(answerId: number): Promise<void> {
   if (!currentAttempt) return;
   const question = currentAttempt.questions[currentIndex];
-  if (question.selected_answer_id !== null) return;
-  document.querySelectorAll<HTMLButtonElement>('.answer').forEach(btn => btn.disabled = true);
+  if (question.selected_answer_id !== null || question.checking_answer_id != null) return;
+  question.checking_answer_id = answerId;
+  renderAttempt();
   try {
     const result = await api<{ is_correct: boolean; correct_answer_id: number; selected_answer_id: number; explanation?: string | null }>(`/api/attempts/${currentAttempt.id}/answer`, {
       method: 'POST', body: JSON.stringify({ question_id: question.question_id, answer_id: answerId }),
     });
     question.selected_answer_id = result.selected_answer_id;
     question.is_correct = result.is_correct;
+    question.checking_answer_id = null;
     question.explanation = result.explanation || question.explanation;
     question.answers = question.answers.map(answer => ({ ...answer, correct: answer.id === result.correct_answer_id }));
     tg?.HapticFeedback?.notificationOccurred(result.is_correct ? 'success' : 'error');
@@ -305,7 +314,7 @@ async function answerCurrent(answerId: number): Promise<void> {
       const destination = next >= 0 ? next : wrap;
       if (destination >= 0) { currentIndex = destination; renderAttempt(); }
     }, 3000);
-  } catch (error) { toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
+  } catch (error) { question.checking_answer_id = null; toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
 }
 
 async function confirmLeave(): Promise<void> {
