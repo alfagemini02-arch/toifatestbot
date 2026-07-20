@@ -117,7 +117,15 @@ async function showSource(sourceId: number, page = 1, search = '', pageSize = 20
   selectedQuestionIds = new Set<number>();
   loading();
   try {
-    const url = `/api/admin/sources/${sourceId}/questions?page=${page}&page_size=${pageSize}&search=${encodeURIComponent(search)}&topic=${encodeURIComponent(topic)}&difficulty=${encodeURIComponent(difficulty)}&answer_count=${encodeURIComponent(answerCount)}`;
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+      search,
+      topic,
+      difficulty,
+    });
+    if (answerCount) params.set('answer_count', answerCount);
+    const url = `/api/admin/sources/${sourceId}/questions?${params.toString()}`;
     const data = await api<any>(url);
     const refresh = () => showSource(sourceId, page, search, pageSize, topic, difficulty, answerCount);
     document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><a class="back-link" href="#sources">← Manbalar</a><h2>${esc(data.source.name)}</h2><span>${data.total} ta savol</span></div><div class="toolbar"><button class="secondary compact" id="find-duplicates">Dublikatlar</button><button class="secondary compact" id="source-import">📥 Import</button><button class="secondary compact" id="move-selected" disabled>⇄ Ko‘chirish</button><button class="primary compact" id="new-question">+ Savol qo‘shish</button></div></div><div class="source-filters"><input id="source-search" placeholder="Savol yoki javobdan qidirish…" value="${esc(search)}"><select id="topic-filter"><option value="">Barcha mavzular</option>${(data.filters?.topics || []).map((value: string) => `<option value="${esc(value)}" ${value === topic ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select><select id="difficulty-filter"><option value="">Barcha qiyinliklar</option><option value="easy" ${difficulty === 'easy' ? 'selected' : ''}>Oson</option><option value="medium" ${difficulty === 'medium' ? 'selected' : ''}>O'rtacha</option><option value="hard" ${difficulty === 'hard' ? 'selected' : ''}>Qiyin</option></select><select id="answer-count-filter"><option value="">Variantlar soni</option>${(data.filters?.answer_counts || []).map((value: number) => `<option value="${value}" ${String(value) === answerCount ? 'selected' : ''}>${value} ta variant</option>`).join('')}</select><select id="page-size"><option value="10" ${pageSize === 10 ? 'selected' : ''}>10 ta</option><option value="20" ${pageSize === 20 ? 'selected' : ''}>20 ta</option><option value="50" ${pageSize === 50 ? 'selected' : ''}>50 ta</option><option value="0" ${pageSize === 0 ? 'selected' : ''}>Barchasi</option></select></div><div class="bulk-line"><label><input id="select-page-questions" type="checkbox"> Sahifadagi savollarni tanlash</label><span id="selected-count">0 ta tanlandi</span></div><div class="question-list">${data.items.map((q: Question) => questionCard(q, true)).join('') || '<div class="empty-block">Savollar topilmadi</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
