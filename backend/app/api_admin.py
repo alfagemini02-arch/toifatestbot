@@ -217,7 +217,7 @@ def source_questions(
     search: str = "",
     topic: str = "",
     difficulty: str = "",
-    answer_count: int | None = None,
+    answer_count: str = "",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=0, le=5000)] = 20,
     db: Session = Depends(get_db),
@@ -237,9 +237,10 @@ def source_questions(
     if difficulty.strip():
         query = query.where(Question.difficulty == difficulty.strip())
         count_query = count_query.where(Question.difficulty == difficulty.strip())
-    if answer_count:
-        query = query.where(answer_count_subquery == answer_count)
-        count_query = count_query.where(answer_count_subquery == answer_count)
+    parsed_answer_count = int(answer_count) if answer_count.strip().isdigit() else None
+    if parsed_answer_count:
+        query = query.where(answer_count_subquery == parsed_answer_count)
+        count_query = count_query.where(answer_count_subquery == parsed_answer_count)
     total = db.scalar(count_query) or 0
     ordered = query.order_by(Question.id.desc())
     if page_size:
