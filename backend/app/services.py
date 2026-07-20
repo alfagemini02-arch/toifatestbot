@@ -7,11 +7,18 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Attempt, AttemptQuestion, ErrorReport, Question, Test, TestAttemptStat, User
+from .models import Answer, Attempt, AttemptQuestion, ErrorReport, Question, QuestionClassificationVote, Source, Test, TestAttemptStat, User
 
 TASHKENT = ZoneInfo("Asia/Tashkent")
+CLASSIFIER_MODE = "classifier"
+EXAM_MODE = "exam"
+REAL_APPEARED_SOURCE_NAME = "Haqiqiy tushgan"
+APPEARED_THRESHOLD = 3
+CLASSIFIER_APPEARED_ID = 1
+CLASSIFIER_NOT_APPEARED_ID = 0
 
 
 def as_utc(value: datetime) -> datetime:
@@ -43,6 +50,7 @@ def serialize_test(test: Test, include_rules: bool = True) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": test.id,
         "name": test.name,
+        "test_mode": test.test_mode,
         "time_limit_minutes": test.time_limit_minutes,
         "is_active": test.is_active,
         "total_questions": test_total_questions(test),
@@ -70,19 +78,23 @@ def create_attempt(db: Session, user: User, test: Test) -> Attempt:
 
     selected_questions: list[Question] = []
     for rule in test.rules:
-        questions = list(
-            db.scalars(
-                select(Question)
-                .options(selectinload(Question.answers))
-                .where(Question.source_id == rule.source_id)
-            ).unique()
-        )
+        if test.test_mode == CLASSIFIER_MODE:
+            questions = list_candidate_classification_questions(db, user, rule.source_id)
+        else:
+            questions = list(
+                db.scalars(
+                    select(Question)
+                    .options(selectinload(Question.answers))
+                    .where(Question.source_id == rule.source_id)
+                ).unique()
+            )
         if not questions:
             continue
         selected_questions.extend(random.sample(questions, min(rule.question_count, len(questions))))
 
     if not selected_questions:
-        raise HTTPException(status_code=422, detail="Test manbalarida savollar mavjud emas")
+        detail = "Ajratish sinovi uchun yangi savollar qolmagan" if test.test_mode == CLASSIFIER_MODE else "Test manbalarida savollar mavjud emas"
+        raise HTTPException(status_code=422, detail=detail)
 
     random.shuffle(selected_questions)
     attempt = Attempt(user_id=user.id, test_id=test.id, total_questions=len(selected_questions), correct_count=0)
@@ -91,11 +103,9 @@ def create_attempt(db: Session, user: User, test: Test) -> Attempt:
 
     for index, question in enumerate(selected_questions, start=1):
         explanation = question.explanation
-        answer_snapshot = [
-            {"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct, "_explanation": explanation}
-            for answer in question.answers
-        ]
-        random.shuffle(answer_snapshot)
+        answer_snapshot = [{"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct, "_explanation": explanation} for answer in question.answers]
+        if test.test_mode != CLASSIFIER_MODE:
+            random.shuffle(answer_snapshot)
         db.add(
             AttemptQuestion(
                 attempt_id=attempt.id,
@@ -159,6 +169,7 @@ def serialize_attempt(attempt: Attempt, include_correct_for_answered: bool = Tru
         "id": attempt.id,
         "test_id": attempt.test_id,
         "test_name": attempt.test.name,
+        "test_mode": attempt.test.test_mode,
         "started_at": attempt.started_at.isoformat(),
         "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
         "total_questions": attempt.total_questions,
@@ -210,6 +221,8 @@ def submit_answer_by_id(db: Session, attempt_id: int, user_id: int, question_id:
     )
     if not attempt:
         raise HTTPException(status_code=404, detail="Urinish topilmadi")
+    if attempt.test.test_mode == CLASSIFIER_MODE:
+        raise HTTPException(status_code=409, detail="Bu ajratish sinovi. Tushgan yoki tushmagan deb belgilang")
     if attempt.finished_at:
         raise HTTPException(status_code=409, detail="Test allaqachon yakunlangan")
     if auto_finish_if_expired(db, attempt):
@@ -247,6 +260,138 @@ def submit_answer_by_id(db: Session, attempt_id: int, user_id: int, question_id:
     }
 
 
+def list_candidate_classification_questions(db: Session, user: User, source_id: int) -> list[Question]:
+    voted_subquery = select(QuestionClassificationVote.question_id).where(QuestionClassificationVote.user_id == user.id)
+    promoted_subquery = (
+        select(QuestionClassificationVote.question_id)
+        .where(QuestionClassificationVote.vote == "appeared")
+        .group_by(QuestionClassificationVote.question_id)
+        .having(func.count(QuestionClassificationVote.id) >= APPEARED_THRESHOLD)
+    )
+    real_source_texts = (
+        select(Question.question_text)
+        .join(Source, Source.id == Question.source_id)
+        .where(Source.name == REAL_APPEARED_SOURCE_NAME)
+    )
+    return list(
+        db.scalars(
+            select(Question)
+            .options(selectinload(Question.answers), selectinload(Question.source))
+            .where(
+                Question.source_id == source_id,
+                Question.id.not_in(voted_subquery),
+                Question.id.not_in(promoted_subquery),
+                Question.question_text.not_in(real_source_texts),
+            )
+        ).unique()
+    )
+
+
+def ensure_real_appeared_source(db: Session) -> Source:
+    source = db.scalar(select(Source).where(Source.name == REAL_APPEARED_SOURCE_NAME))
+    if source:
+        return source
+    source = Source(name=REAL_APPEARED_SOURCE_NAME)
+    db.add(source)
+    db.flush()
+    return source
+
+
+def promote_question_if_needed(db: Session, question: Question) -> bool:
+    appeared_count = db.scalar(
+        select(func.count(QuestionClassificationVote.id)).where(
+            QuestionClassificationVote.question_id == question.id,
+            QuestionClassificationVote.vote == "appeared",
+        )
+    ) or 0
+    if appeared_count < APPEARED_THRESHOLD:
+        return False
+    target_source = ensure_real_appeared_source(db)
+    existing = db.scalar(select(Question).where(Question.source_id == target_source.id, Question.question_text == question.question_text))
+    if existing:
+        return False
+    clone = Question(
+        source_id=target_source.id,
+        question_text=question.question_text,
+        question_type=question.question_type,
+        topic=question.topic,
+        difficulty=question.difficulty,
+        explanation=question.explanation,
+    )
+    db.add(clone)
+    db.flush()
+    for position, answer in enumerate(question.answers):
+        db.add(Answer(question_id=clone.id, answer_text=answer.answer_text, is_correct=answer.is_correct, position=position))
+    return True
+
+
+def submit_classification_by_id(db: Session, attempt_id: int, user: User, question_id: int, appeared: bool) -> dict[str, Any]:
+    attempt = db.scalar(
+        select(Attempt)
+        .options(selectinload(Attempt.test))
+        .where(Attempt.id == attempt_id, Attempt.user_id == user.id)
+    )
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Urinish topilmadi")
+    if attempt.test.test_mode != CLASSIFIER_MODE:
+        raise HTTPException(status_code=409, detail="Bu oddiy test. Javob variantini tanlang")
+    if attempt.finished_at:
+        raise HTTPException(status_code=409, detail="Test allaqachon yakunlangan")
+    if auto_finish_if_expired(db, attempt):
+        raise HTTPException(status_code=409, detail="Test vaqti tugagan")
+
+    item = db.scalar(
+        select(AttemptQuestion).where(
+            AttemptQuestion.attempt_id == attempt.id,
+            or_(AttemptQuestion.question_id == question_id, AttemptQuestion.id == question_id),
+        )
+    )
+    if not item or not item.question_id:
+        raise HTTPException(status_code=404, detail="Savol ushbu urinishga tegishli emas")
+    if item.selected_answer_id is not None:
+        raise HTTPException(status_code=409, detail="Bu savol avval belgilangan")
+
+    question = db.scalar(
+        select(Question)
+        .options(selectinload(Question.answers), selectinload(Question.source))
+        .where(Question.id == item.question_id)
+    )
+    if not question:
+        raise HTTPException(status_code=404, detail="Savol topilmadi")
+
+    vote = QuestionClassificationVote(
+        user_id=user.id,
+        question_id=question.id,
+        test_id=attempt.test_id,
+        vote="appeared" if appeared else "not_appeared",
+    )
+    db.add(vote)
+    item.selected_answer_id = CLASSIFIER_APPEARED_ID if appeared else CLASSIFIER_NOT_APPEARED_ID
+    item.is_correct = appeared
+    if appeared:
+        attempt.correct_count += 1
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Bu savolni avval belgilagansiz") from exc
+
+    promoted = promote_question_if_needed(db, question) if appeared else False
+    db.commit()
+    appeared_count = db.scalar(
+        select(func.count(QuestionClassificationVote.id)).where(
+            QuestionClassificationVote.question_id == question.id,
+            QuestionClassificationVote.vote == "appeared",
+        )
+    ) or 0
+    return {
+        "selected_answer_id": item.selected_answer_id,
+        "appeared": appeared,
+        "appeared_count": appeared_count,
+        "promoted": promoted,
+    }
+
+
 def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
     if not attempt.finished_at:
         attempt.finished_at = datetime.now(timezone.utc)
@@ -255,6 +400,8 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
     total = attempt.total_questions
     correct = attempt.correct_count
     percentage = round((correct / total) * 100) if total else 0
+    if attempt.test.test_mode == CLASSIFIER_MODE:
+        percentage = round((answered / total) * 100) if total else 0
     finished_at = as_utc(attempt.finished_at) if attempt.finished_at else datetime.now(timezone.utc)
     spent_seconds = int((finished_at - as_utc(attempt.started_at)).total_seconds())
     question_ids = [item.question_id for item in attempt.questions if item.question_id]
@@ -277,6 +424,7 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
     result = {
         "attempt_id": attempt.id,
         "test_name": attempt.test.name,
+        "test_mode": attempt.test.test_mode,
         "total": total,
         "answered": answered,
         "correct": correct,

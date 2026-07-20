@@ -89,6 +89,7 @@ class Test(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    test_mode: Mapped[str] = mapped_column(String(30), default="exam", index=True, nullable=False)
     time_limit_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -160,6 +161,22 @@ class TestAttemptStat(Base):
     correct_count: Mapped[int] = mapped_column(Integer, nullable=False)
     percentage: Mapped[int] = mapped_column(Integer, nullable=False)
     spent_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class QuestionClassificationVote(Base):
+    __tablename__ = "question_classification_votes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    question_id: Mapped[int] = mapped_column(ForeignKey("source_questions.id", ondelete="CASCADE"), index=True, nullable=False)
+    test_id: Mapped[int | None] = mapped_column(ForeignKey("tests.id", ondelete="SET NULL"), index=True)
+    vote: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "question_id", name="uq_classification_user_question"),
+        Index("idx_classification_question_vote", "question_id", "vote"),
+    )
 
 
 class ErrorReport(Base):

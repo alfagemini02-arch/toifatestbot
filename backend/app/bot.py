@@ -104,7 +104,7 @@ async def set_user_menu_button(message: Message) -> None:
 def main_menu(admin: bool = False, telegram_id: int | None = None) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="Testlarni boshlash", web_app=WebAppInfo(url=user_webapp_url(telegram_id)))],
-        [KeyboardButton(text="Statistika"), KeyboardButton(text="Xatolik haqida xabar")],
+        [KeyboardButton(text="Xatolik haqida xabar")],
         [KeyboardButton(text="Admin bilan aloqa")],
     ]
     if admin:
@@ -146,7 +146,6 @@ async def help_command(message: Message) -> None:
     await message.answer(
         "<b>Yo'riqnoma</b>\n\n"
         "📝 Testlarni boshlash — Mini App'ni ochadi.\n"
-        "📊 Statistika — shaxsiy natijalaringiz.\n"
         "⚠️ Xatolik haqida xabar — screenshot yoki izohni adminga yuboradi.\n"
         "/cancel — joriy amalni bekor qiladi.",
         reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),

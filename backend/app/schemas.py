@@ -84,6 +84,7 @@ class TestRuleInput(BaseModel):
 
 class TestInput(BaseModel):
     name: Annotated[str, Field(min_length=2, max_length=255)]
+    test_mode: Annotated[str, Field(pattern="^(exam|classifier)$")] = "exam"
     time_limit_minutes: Annotated[int, Field(ge=0, le=1440)] = 0
     is_active: bool = True
     rules: Annotated[list[TestRuleInput], Field(min_length=1, max_length=100)]
@@ -104,6 +105,11 @@ class AttemptCreate(BaseModel):
 class AnswerSubmit(BaseModel):
     question_id: int
     answer_id: int
+
+
+class ClassificationSubmit(BaseModel):
+    question_id: int
+    appeared: bool
 
 
 class QuestionReportInput(BaseModel):

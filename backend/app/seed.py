@@ -41,6 +41,12 @@ def _run_lightweight_migrations() -> None:
                 if column_name not in existing_questions:
                     connection.execute(text(f"ALTER TABLE source_questions ADD COLUMN {column_name} {column_type}"))
 
+    if "tests" in table_names:
+        existing_tests = {column["name"] for column in inspector.get_columns("tests")}
+        if "test_mode" not in existing_tests:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE tests ADD COLUMN test_mode VARCHAR(30) NOT NULL DEFAULT 'exam'"))
+
     if {"attempts", "attempt_questions", "tests", "test_attempt_stats"}.issubset(table_names):
         with engine.begin() as connection:
             connection.execute(

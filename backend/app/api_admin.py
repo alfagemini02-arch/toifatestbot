@@ -457,7 +457,7 @@ def get_admin_test(test_id: int, db: Session = Depends(get_db)) -> dict:
 @router.post("/tests", status_code=201)
 def create_test(payload: TestInput, db: Session = Depends(get_db)) -> dict:
     _validate_test_rules(db, payload)
-    test = Test(name=payload.name.strip(), time_limit_minutes=payload.time_limit_minutes, is_active=payload.is_active)
+    test = Test(name=payload.name.strip(), test_mode=payload.test_mode, time_limit_minutes=payload.time_limit_minutes, is_active=payload.is_active)
     db.add(test)
     try:
         db.flush()
@@ -474,6 +474,7 @@ def update_test(test_id: int, payload: TestInput, db: Session = Depends(get_db))
     test = _test_or_404(db, test_id)
     _validate_test_rules(db, payload)
     test.name = payload.name.strip()
+    test.test_mode = payload.test_mode
     test.time_limit_minutes = payload.time_limit_minutes
     test.is_active = payload.is_active
     try:

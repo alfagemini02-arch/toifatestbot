@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from .database import get_db
 from .deps import enforce_rate_limit, get_current_user
 from .models import Attempt, AttemptQuestion, ErrorReport, Question, Source, Test, TestRule, User
-from .schemas import AnswerSubmit, AttemptCreate, QuestionReportInput
+from .schemas import AnswerSubmit, AttemptCreate, ClassificationSubmit, QuestionReportInput
 from .services import (
     auto_finish_if_expired,
     create_attempt,
@@ -17,6 +17,7 @@ from .services import (
     serialize_attempt,
     serialize_test,
     submit_answer_by_id,
+    submit_classification_by_id,
     user_stats,
 )
 
@@ -94,6 +95,16 @@ def answer_question(
     db: Session = Depends(get_db),
 ) -> dict:
     return submit_answer_by_id(db, attempt_id, user.id, payload.question_id, payload.answer_id)
+
+
+@router.post("/attempts/{attempt_id}/classification")
+def classify_question(
+    attempt_id: int,
+    payload: ClassificationSubmit,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return submit_classification_by_id(db, attempt_id, user, payload.question_id, payload.appeared)
 
 
 @router.post("/questions/{question_id}/reports", status_code=201)
