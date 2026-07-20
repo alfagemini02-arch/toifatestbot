@@ -7,6 +7,7 @@ type TestRule = { source_id: number; source_name?: string; question_count: numbe
 type TestItem = { id: number; name: string; time_limit_minutes: number; is_active: boolean; total_questions: number; attempt_count: number; rules: TestRule[] };
 type ParsedQuestion = { question: string; answers: Answer[]; valid: boolean; problems: string[]; duplicate_in_file: boolean; duplicate_in_database: boolean; source_name?: string | null };
 type ErrorReport = { id: number; status: string; message_text: string | null; created_at: string; fixed_at: string | null; attempt_id: number | null; question_id: number | null; question_text: string | null; source_name: string | null; answers: Answer[]; question: Question | null; user: { full_name: string | null; telegram_id: number | null; phone: string | null; username: string | null } };
+type DuplicateGroup = { key: string; count: number; keep_id: number; items: Question[] };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
@@ -118,8 +119,9 @@ async function showSource(sourceId: number, page = 1, search = ''): Promise<void
   try {
     const data = await api<any>(`/api/admin/sources/${sourceId}/questions?page=${page}&search=${encodeURIComponent(search)}`);
     const refresh = () => showSource(sourceId, page, search);
-    document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><a class="back-link" href="#sources">← Manbalar</a><h2>${esc(data.source.name)}</h2><span>${data.total} ta savol</span></div><div class="toolbar"><button class="secondary compact" id="source-import">📥 Import</button><button class="secondary compact" id="move-selected" disabled>⇄ Ko‘chirish</button><button class="primary compact" id="new-question">+ Savol qo‘shish</button></div></div><div class="search-row"><input id="source-search" placeholder="Savol yoki javobdan qidirish…" value="${esc(search)}"></div><div class="bulk-line"><label><input id="select-page-questions" type="checkbox"> Sahifadagi savollarni tanlash</label><span id="selected-count">0 ta tanlandi</span></div><div class="question-list">${data.items.map((q: Question) => questionCard(q, true)).join('') || '<div class="empty-block">Savollar topilmadi</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
+    document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><a class="back-link" href="#sources">← Manbalar</a><h2>${esc(data.source.name)}</h2><span>${data.total} ta savol</span></div><div class="toolbar"><button class="secondary compact" id="find-duplicates">Dublikatlar</button><button class="secondary compact" id="source-import">📥 Import</button><button class="secondary compact" id="move-selected" disabled>⇄ Ko‘chirish</button><button class="primary compact" id="new-question">+ Savol qo‘shish</button></div></div><div class="search-row"><input id="source-search" placeholder="Savol yoki javobdan qidirish…" value="${esc(search)}"></div><div class="bulk-line"><label><input id="select-page-questions" type="checkbox"> Sahifadagi savollarni tanlash</label><span id="selected-count">0 ta tanlandi</span></div><div class="question-list">${data.items.map((q: Question) => questionCard(q, true)).join('') || '<div class="empty-block">Savollar topilmadi</div>'}</div><div class="pagination"><button class="ghost compact" id="prev-page" ${page <= 1 ? 'disabled' : ''}>← Oldingi</button><span>${page} / ${data.pages}</span><button class="ghost compact" id="next-page" ${page >= data.pages ? 'disabled' : ''}>Keyingi →</button></div></section>`;
     document.querySelector('#new-question')?.addEventListener('click', () => questionModal(undefined, sourceId));
+    document.querySelector('#find-duplicates')?.addEventListener('click', () => showDuplicates(sourceId, refresh));
     document.querySelector('#source-import')?.addEventListener('click', () => { location.hash = `#import?source=${sourceId}`; });
     document.querySelector('#move-selected')?.addEventListener('click', () => moveSelectedQuestions(sourceId, refresh));
     bindQuestionActions(refresh);
@@ -184,6 +186,51 @@ async function moveSelectedQuestions(currentSourceId: number, refresh: () => voi
       button.disabled = false;
     }
   });
+}
+async function showDuplicates(sourceId: number, refresh: () => void): Promise<void> {
+  openModal('<div class="duplicate-modal"><h2>Dublikat savollar</h2><div class="loading small"><div class="spinner"></div><p>Tekshirilmoqda...</p></div></div>');
+  try {
+    const data = await api<{ source: Source; groups: DuplicateGroup[]; group_count: number; duplicate_question_count: number; delete_candidate_count: number }>(`/api/admin/sources/${sourceId}/duplicates`);
+    if (!data.groups.length) {
+      openModal(`<div class="duplicate-modal"><h2>Dublikat savollar</h2><p class="modal-hint">${esc(data.source.name)} manbasida takrorlangan savol topilmadi.</p><div class="modal-actions"><button class="primary" data-close>Yopish</button></div></div>`);
+      return;
+    }
+    openModal(`<div class="duplicate-modal wide-modal"><h2>Dublikat savollar</h2><p class="modal-hint">${data.group_count} ta guruh, ${data.delete_candidate_count} ta ortiqcha savol topildi.</p><div class="duplicate-actions"><button class="primary compact" id="dedupe-auto">Har guruhdan bittadan qoldirish</button><button class="danger-button compact" id="dedupe-selected" disabled>Tanlanganlarni o'chirish</button></div><div class="duplicate-list">${data.groups.map((group, groupIndex) => `<section class="duplicate-group"><div class="duplicate-title"><strong>Guruh ${groupIndex + 1}</strong><span>${group.count} ta takror</span></div>${group.items.map(item => `<article class="duplicate-item ${item.id === group.keep_id ? 'keep' : ''}"><label><input type="checkbox" data-duplicate-question="${item.id}" ${item.id === group.keep_id ? 'disabled' : ''}> <span>ID ${item.id}${item.id === group.keep_id ? ' - qoldiriladi' : ''}</span></label><h3>${esc(item.question_text)}</h3><small>${esc(item.source_name)} · To'g'ri: ${esc(item.answers.find(answer => answer.correct)?.text || 'Belgilanmagan')}</small></article>`).join('')}</section>`).join('')}</div></div>`);
+    const updateDeleteButton = () => {
+      const checked = document.querySelectorAll<HTMLInputElement>('[data-duplicate-question]:checked').length;
+      const button = document.querySelector<HTMLButtonElement>('#dedupe-selected');
+      if (button) {
+        button.disabled = checked === 0;
+        button.textContent = checked ? `${checked} ta tanlanganni o'chirish` : "Tanlanganlarni o'chirish";
+      }
+    };
+    document.querySelectorAll<HTMLInputElement>('[data-duplicate-question]').forEach(input => input.addEventListener('change', updateDeleteButton));
+    document.querySelector('#dedupe-auto')?.addEventListener('click', async () => {
+      if (!confirm('Har bir dublikat guruhidan faqat bittadan savol qoldirilsinmi?')) return;
+      try {
+        const result = await api<any>(`/api/admin/sources/${sourceId}/duplicates/deduplicate`, { method: 'POST', body: JSON.stringify({}) });
+        closeModal();
+        toast(`${result.deleted} ta dublikat savol o'chirildi`);
+        refresh();
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), 'error');
+      }
+    });
+    document.querySelector('#dedupe-selected')?.addEventListener('click', async () => {
+      const ids = [...document.querySelectorAll<HTMLInputElement>('[data-duplicate-question]:checked')].map(input => Number(input.dataset.duplicateQuestion));
+      if (!ids.length || !confirm(`${ids.length} ta tanlangan savol o'chirilsinmi?`)) return;
+      try {
+        const result = await api<any>('/api/admin/questions/bulk-delete', { method: 'POST', body: JSON.stringify({ question_ids: ids }) });
+        closeModal();
+        toast(`${result.deleted} ta savol o'chirildi`);
+        refresh();
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), 'error');
+      }
+    });
+  } catch (error) {
+    openModal(`<div class="duplicate-modal"><h2>Dublikat savollar</h2><div class="error-box"><strong>Xatolik</strong><p>${esc(error instanceof Error ? error.message : String(error))}</p></div><div class="modal-actions"><button class="primary" data-close>Yopish</button></div></div>`);
+  }
 }
 async function questionModal(question?: Question, defaultSourceId?: number, refresh?: () => void | Promise<void>): Promise<void> {
   if (!sourceCache.length) await loadSources(); const answers = question?.answers.length ? question.answers : [{ text: '', correct: true }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }];
