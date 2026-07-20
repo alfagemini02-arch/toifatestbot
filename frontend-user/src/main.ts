@@ -14,6 +14,7 @@ declare global {
         BackButton: { show(): void; hide(): void; onClick(cb: () => void): void; offClick(cb: () => void): void };
         HapticFeedback?: { notificationOccurred(type: 'success' | 'error' | 'warning'): void };
         openTelegramLink?(url: string): void;
+        shareMessage?(message: string): void;
       };
     };
   }
@@ -26,6 +27,7 @@ type AttemptQuestion = {
   question_id: number;
   order_index: number;
   question_text: string;
+  explanation?: string | null;
   answers: Answer[];
   selected_answer_id: number | null;
   is_correct: boolean | null;
@@ -45,6 +47,7 @@ type Attempt = {
 type Result = {
   attempt_id: number; test_name: string; total: number; answered: number; correct: number;
   incorrect: number; unanswered: number; percentage: number; spent_seconds: number;
+  topic_stats?: Array<{ topic: string; total: number; correct: number; percentage: number }>;
 };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -225,6 +228,7 @@ function renderAttempt(): void {
   setBack(() => void confirmLeave());
   const question = currentAttempt.questions[currentIndex];
   const answered = currentAttempt.questions.filter(q => q.selected_answer_id !== null).length;
+  const explanation = question.selected_answer_id !== null && question.explanation ? `<div class="answer-explanation"><strong>Tushuntirish</strong><p>${escapeHtml(question.explanation)}</p></div>` : '';
   app.innerHTML = `<main class="test-page">
     <header class="test-header"><div><span class="eyebrow">Test</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
     <details class="question-picker"><summary><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><b>Savollar ro'yxati</b></summary><nav class="question-nav" id="question-nav">${currentAttempt.questions.map((item, index) => `<button class="q-dot ${index === currentIndex ? 'current' : ''} ${item.is_correct === true ? 'correct' : item.is_correct === false ? 'wrong' : ''}" data-index="${index}">${index + 1}</button>`).join('')}</nav></details>
@@ -235,7 +239,7 @@ function renderAttempt(): void {
         else if (answer.id === question.selected_answer_id) cls = 'wrong';
       }
       return `<button class="answer ${cls}" data-answer-id="${answer.id}" ${question.selected_answer_id !== null ? 'disabled' : ''}><span>${String.fromCharCode(65 + index)}</span><b>${escapeHtml(answer.text)}</b></button>`;
-    }).join('')}</div><button class="report-question" id="report-question" type="button">Savolda muammo bor</button></article><div class="pager"><button class="ghost" id="prev" ${currentIndex === 0 ? 'disabled' : ''}>Oldingi</button><button class="ghost" id="next" ${currentIndex === currentAttempt.questions.length - 1 ? 'disabled' : ''}>Keyingi</button></div><div class="finish-row"><button class="finish finish-inline" id="finish">Testni yakunlash</button></div></section>
+    }).join('')}</div>${explanation}<button class="report-question" id="report-question" type="button">Savolda muammo bor</button></article><div class="pager"><button class="ghost" id="prev" ${currentIndex === 0 ? 'disabled' : ''}>Oldingi</button><button class="ghost" id="next" ${currentIndex === currentAttempt.questions.length - 1 ? 'disabled' : ''}>Keyingi</button></div><div class="finish-row"><button class="finish finish-inline" id="finish">Testni yakunlash</button></div></section>
   </main>`;
   startTimer(currentAttempt.remaining_seconds);
   document.querySelectorAll<HTMLElement>('[data-index]').forEach(button => button.addEventListener('click', () => { currentIndex = Number(button.dataset.index); renderAttempt(); }));
@@ -285,11 +289,12 @@ async function answerCurrent(answerId: number): Promise<void> {
   if (question.selected_answer_id !== null) return;
   document.querySelectorAll<HTMLButtonElement>('.answer').forEach(btn => btn.disabled = true);
   try {
-    const result = await api<{ is_correct: boolean; correct_answer_id: number; selected_answer_id: number }>(`/api/attempts/${currentAttempt.id}/answer`, {
+    const result = await api<{ is_correct: boolean; correct_answer_id: number; selected_answer_id: number; explanation?: string | null }>(`/api/attempts/${currentAttempt.id}/answer`, {
       method: 'POST', body: JSON.stringify({ question_id: question.question_id, answer_id: answerId }),
     });
     question.selected_answer_id = result.selected_answer_id;
     question.is_correct = result.is_correct;
+    question.explanation = result.explanation || question.explanation;
     question.answers = question.answers.map(answer => ({ ...answer, correct: answer.id === result.correct_answer_id }));
     tg?.HapticFeedback?.notificationOccurred(result.is_correct ? 'success' : 'error');
     renderAttempt();
@@ -330,11 +335,54 @@ function evaluation(percentage: number): string {
 function showResult(result: Result): void {
   setBack(() => void showHome());
   const minutes = Math.floor(result.spent_seconds / 60); const seconds = result.spent_seconds % 60;
-  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${result.percentage}%</strong><span>natija</span></div></div><h2>${evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>To'g'ri</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>Noto'g'ri</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div><div class="result-actions"><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
+  const topics = result.topic_stats?.length ? `<div class="topic-results">${result.topic_stats.map(item => `<div><span>${escapeHtml(item.topic)}</span><b>${item.correct}/${item.total} (${item.percentage}%)</b></div>`).join('')}</div>` : '';
+  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${result.percentage}%</strong><span>natija</span></div></div><h2>${evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>To'g'ri</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>Noto'g'ri</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div>${topics}<div class="result-actions"><button class="secondary" id="share-result">Natijani rasm qilish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
+  document.querySelector('#share-result')?.addEventListener('click', () => shareResultImage(result));
   document.querySelector('#retry-test')?.addEventListener('click', async () => {
     if (!currentAttempt) return; const tests = await api<TestItem[]>('/api/tests'); const test = tests.find(item => item.id === currentAttempt!.test_id); if (test) await startTest(test.id, test);
   });
   document.querySelector('#home')?.addEventListener('click', () => showHome());
+}
+
+async function shareResultImage(result: Result): Promise<void> {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1080; canvas.height = 1350;
+  const ctx = canvas.getContext('2d')!;
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  gradient.addColorStop(0, '#2563eb'); gradient.addColorStop(1, '#7c3aed');
+  ctx.fillStyle = gradient; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'rgba(255,255,255,.12)';
+  for (let i = 0; i < 9; i += 1) { ctx.beginPath(); ctx.arc(120 + i * 120, 180 + (i % 3) * 120, 52, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = '#ffffff'; roundRect(ctx, 90, 120, 900, 1110, 42); ctx.fill();
+  ctx.fillStyle = '#0f172a'; ctx.font = '800 48px Inter, Arial'; ctx.fillText('Bojxona toifa testlari', 150, 210);
+  ctx.fillStyle = '#64748b'; ctx.font = '500 30px Inter, Arial'; ctx.fillText(result.test_name, 150, 265);
+  ctx.fillStyle = '#2563eb'; ctx.font = '900 150px Inter, Arial'; ctx.textAlign = 'center'; ctx.fillText(`${result.percentage}%`, 540, 500);
+  ctx.fillStyle = '#0f172a'; ctx.font = '800 42px Inter, Arial'; ctx.fillText(evaluation(result.percentage), 540, 575);
+  ctx.textAlign = 'left';
+  const stats = [['To‘g‘ri', result.correct], ['Noto‘g‘ri', result.incorrect], ['Javobsiz', result.unanswered], ['Jami', result.total]];
+  stats.forEach((item, index) => {
+    const x = 150 + (index % 2) * 390; const y = 690 + Math.floor(index / 2) * 145;
+    ctx.fillStyle = '#f1f5f9'; roundRect(ctx, x, y, 330, 105, 22); ctx.fill();
+    ctx.fillStyle = '#64748b'; ctx.font = '500 26px Inter, Arial'; ctx.fillText(item[0] as string, x + 28, y + 38);
+    ctx.fillStyle = '#0f172a'; ctx.font = '900 42px Inter, Arial'; ctx.fillText(String(item[1]), x + 28, y + 82);
+  });
+  ctx.fillStyle = '#334155'; ctx.font = '500 28px Inter, Arial'; ctx.fillText('Natija rasmi Mini App orqali yaratildi', 150, 1080);
+  ctx.fillStyle = '#94a3b8'; ctx.font = '500 24px Inter, Arial'; ctx.fillText(new Date().toLocaleString('uz-UZ'), 150, 1124);
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png', .95));
+  if (!blob) return toast('Rasm yaratib bo‘lmadi');
+  const file = new File([blob], 'test-natija.png', { type: 'image/png' });
+  if (navigator.canShare?.({ files: [file] })) {
+    await navigator.share({ title: 'Test natijam', text: `${result.test_name}: ${result.percentage}%`, files: [file] });
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a'); link.href = url; link.download = 'test-natija.png'; link.click();
+  URL.revokeObjectURL(url);
+  toast('Natija rasmi yuklandi');
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 }
 
 async function showReview(attemptId: number): Promise<void> {
