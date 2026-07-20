@@ -171,19 +171,15 @@ function modal(title: string, body: string, confirmText = 'Tasdiqlash'): Promise
 async function showHome(): Promise<void> {
   clearTimer(); setBack(); loading();
   try {
-    const [me, tests, active] = await Promise.all([
-      api<{ full_name: string; stats: { count: number; average: number; best_percentage: number } }>('/api/me'),
+    const [me, tests] = await Promise.all([
+      api<{ full_name: string }>('/api/me'),
       api<TestItem[]>('/api/tests'),
-      api<Attempt | null>('/api/attempts/active'),
     ]);
     app.innerHTML = `<main class="page home-page">
-      <header class="welcome"><div><p class="eyebrow">Bugungi testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Bilimingizni sinab ko'ring va natijalaringizni yaxshilang.</p></div><div class="avatar">${escapeHtml(me.full_name.charAt(0).toUpperCase())}</div></header>
-      <section class="mini-stats"><div><strong>${me.stats.count}</strong><span>Ishlangan</span></div><div><strong>${me.stats.average}%</strong><span>O'rtacha</span></div><div><strong>${me.stats.best_percentage}%</strong><span>Eng yaxshi</span></div></section>
-      ${active ? `<section class="resume-card"><div><span class="badge warning">Tugallanmagan</span><h2>${escapeHtml(active.test_name)}</h2><p>${active.questions.filter(q => q.selected_answer_id !== null).length}/${active.total_questions} ta savolga javob berilgan</p></div><button class="primary" id="resume">Davom ettirish</button></section>` : ''}
+      <header class="welcome"><div><p class="eyebrow">Testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Kerakli testni tanlang, yakunda natijangizni ko'rasiz.</p></div><div class="avatar">${escapeHtml(me.full_name.charAt(0).toUpperCase())}</div></header>
       <section><div class="section-title"><h2>Faol testlar</h2><span>${tests.length} ta</span></div><div class="test-grid">${tests.length ? tests.map(test => `
         <article class="test-card" data-test-id="${test.id}"><div class="test-icon">T</div><div class="test-info"><h3>${escapeHtml(test.name)}</h3><p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ', vaqt cheklanmagan'}</p></div><button class="circle-button" aria-label="Boshlash">›</button></article>`).join('') : '<div class="empty">Hozircha faol test mavjud emas.</div>'}</div></section>
     </main>`;
-    document.querySelector('#resume')?.addEventListener('click', () => openAttempt(active!.id));
     document.querySelectorAll<HTMLElement>('[data-test-id]').forEach(card => card.addEventListener('click', () => startTest(Number(card.dataset.testId), tests.find(t => t.id === Number(card.dataset.testId))!)));
   } catch (error) { showFatal(error); }
 }
@@ -303,12 +299,12 @@ async function answerCurrent(answerId: number): Promise<void> {
       const wrap = currentAttempt.questions.findIndex(item => item.selected_answer_id === null);
       const destination = next >= 0 ? next : wrap;
       if (destination >= 0) { currentIndex = destination; renderAttempt(); }
-    }, 800);
+    }, 3000);
   } catch (error) { toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
 }
 
 async function confirmLeave(): Promise<void> {
-  const accepted = await modal('Testdan chiqasizmi?', '<p>Javoblaringiz saqlanadi va keyin davom ettirishingiz mumkin.</p>', 'Chiqish');
+  const accepted = await modal('Testdan chiqasizmi?', '<p>Testlar sahifasiga qaytasiz. Yangi test boshlanganda eski tugallanmagan urinish tozalanadi.</p>', 'Chiqish');
   if (accepted) await showHome();
 }
 
@@ -334,8 +330,7 @@ function evaluation(percentage: number): string {
 function showResult(result: Result): void {
   setBack(() => void showHome());
   const minutes = Math.floor(result.spent_seconds / 60); const seconds = result.spent_seconds % 60;
-  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${result.percentage}%</strong><span>natija</span></div></div><h2>${evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>To'g'ri</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>Noto'g'ri</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div><div class="result-actions"><button class="secondary" id="review">Javoblarni ko'rish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
-  document.querySelector('#review')?.addEventListener('click', () => showReview(result.attempt_id));
+  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${result.percentage}%</strong><span>natija</span></div></div><h2>${evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>To'g'ri</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>Noto'g'ri</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div><div class="result-actions"><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
   document.querySelector('#retry-test')?.addEventListener('click', async () => {
     if (!currentAttempt) return; const tests = await api<TestItem[]>('/api/tests'); const test = tests.find(item => item.id === currentAttempt!.test_id); if (test) await startTest(test.id, test);
   });
