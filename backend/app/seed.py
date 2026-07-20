@@ -12,22 +12,50 @@ settings = get_settings()
 
 def _run_lightweight_migrations() -> None:
     inspector = inspect(engine)
-    if "error_reports" not in inspector.get_table_names():
-        return
+    table_names = set(inspector.get_table_names())
 
-    existing = {column["name"] for column in inspector.get_columns("error_reports")}
-    json_type = "JSON" if engine.dialect.name != "sqlite" else "TEXT"
-    additions = {
-        "question_id": "INTEGER",
-        "attempt_id": "INTEGER",
-        "question_text_snapshot": "TEXT",
-        "source_name_snapshot": "VARCHAR(255)",
-        "answers_snapshot": json_type,
-    }
-    with engine.begin() as connection:
-        for column_name, column_type in additions.items():
-            if column_name not in existing:
-                connection.execute(text(f"ALTER TABLE error_reports ADD COLUMN {column_name} {column_type}"))
+    if "error_reports" in table_names:
+        existing = {column["name"] for column in inspector.get_columns("error_reports")}
+        json_type = "JSON" if engine.dialect.name != "sqlite" else "TEXT"
+        additions = {
+            "question_id": "INTEGER",
+            "attempt_id": "INTEGER",
+            "question_text_snapshot": "TEXT",
+            "source_name_snapshot": "VARCHAR(255)",
+            "answers_snapshot": json_type,
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in additions.items():
+                if column_name not in existing:
+                    connection.execute(text(f"ALTER TABLE error_reports ADD COLUMN {column_name} {column_type}"))
+
+    if {"attempts", "attempt_questions", "tests", "test_attempt_stats"}.issubset(table_names):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO test_attempt_stats
+                        (test_id, test_name_snapshot, finished_at, total_questions, correct_count, percentage, spent_seconds)
+                    SELECT
+                        attempts.test_id,
+                        tests.name,
+                        attempts.finished_at,
+                        attempts.total_questions,
+                        attempts.correct_count,
+                        CASE
+                            WHEN attempts.total_questions > 0
+                            THEN CAST(ROUND(attempts.correct_count * 100.0 / attempts.total_questions) AS INTEGER)
+                            ELSE 0
+                        END,
+                        0
+                    FROM attempts
+                    JOIN tests ON tests.id = attempts.test_id
+                    WHERE attempts.finished_at IS NOT NULL
+                    """
+                )
+            )
+            connection.execute(text("DELETE FROM attempt_questions WHERE attempt_id IN (SELECT id FROM attempts WHERE finished_at IS NOT NULL)"))
+            connection.execute(text("DELETE FROM attempts WHERE finished_at IS NOT NULL"))
 
 
 def initialize_database() -> None:

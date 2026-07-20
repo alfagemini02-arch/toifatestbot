@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Attempt, AttemptQuestion, ErrorReport, Question, Test, User
+from .models import Attempt, AttemptQuestion, ErrorReport, Question, Test, TestAttemptStat, User
 
 TASHKENT = ZoneInfo("Asia/Tashkent")
 
@@ -59,13 +59,11 @@ def serialize_test(test: Test, include_rules: bool = True) -> dict[str, Any]:
 
 
 def create_attempt(db: Session, user: User, test: Test) -> Attempt:
-    existing = db.scalar(
-        select(Attempt)
-        .where(Attempt.user_id == user.id, Attempt.finished_at.is_(None))
-        .order_by(Attempt.started_at.desc())
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail={"message": "Tugallanmagan urinish mavjud", "attempt_id": existing.id})
+    existing_attempts = list(db.scalars(select(Attempt).where(Attempt.user_id == user.id, Attempt.finished_at.is_(None))))
+    for existing in existing_attempts:
+        db.delete(existing)
+    if existing_attempts:
+        db.flush()
 
     selected_questions: list[Question] = []
     for rule in test.rules:
@@ -200,14 +198,13 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
     if not attempt.finished_at:
         attempt.finished_at = datetime.now(timezone.utc)
         attempt.correct_count = sum(1 for item in attempt.questions if item.is_correct)
-        db.commit()
     answered = sum(1 for item in attempt.questions if item.selected_answer_id is not None)
     total = attempt.total_questions
     correct = attempt.correct_count
     percentage = round((correct / total) * 100) if total else 0
     finished_at = as_utc(attempt.finished_at) if attempt.finished_at else datetime.now(timezone.utc)
     spent_seconds = int((finished_at - as_utc(attempt.started_at)).total_seconds())
-    return {
+    result = {
         "attempt_id": attempt.id,
         "test_name": attempt.test.name,
         "total": total,
@@ -218,6 +215,20 @@ def finish_attempt(db: Session, attempt: Attempt) -> dict[str, Any]:
         "percentage": percentage,
         "spent_seconds": max(0, spent_seconds),
     }
+    db.add(
+        TestAttemptStat(
+            test_id=attempt.test_id,
+            test_name_snapshot=attempt.test.name,
+            finished_at=finished_at,
+            total_questions=total,
+            correct_count=correct,
+            percentage=percentage,
+            spent_seconds=max(0, spent_seconds),
+        )
+    )
+    db.delete(attempt)
+    db.commit()
+    return result
 
 
 def review_attempt(attempt: Attempt) -> dict[str, Any]:
@@ -243,27 +254,12 @@ def review_attempt(attempt: Attempt) -> dict[str, Any]:
 
 
 def user_stats(db: Session, user: User) -> dict[str, Any]:
-    finished = list(
-        db.scalars(
-            select(Attempt)
-            .options(selectinload(Attempt.test))
-            .where(Attempt.user_id == user.id, Attempt.finished_at.is_not(None))
-        )
-    )
-    percentages = [round(item.correct_count * 100 / item.total_questions) for item in finished if item.total_questions]
-    best = max(finished, key=lambda item: item.correct_count / item.total_questions if item.total_questions else 0, default=None)
-    now_tashkent = datetime.now(TASHKENT)
-    today_count = sum(
-        1
-        for item in finished
-        if item.finished_at and as_utc(item.finished_at).astimezone(TASHKENT).date() == now_tashkent.date()
-    )
     return {
-        "count": len(finished),
-        "average": round(sum(percentages) / len(percentages)) if percentages else 0,
-        "best_percentage": round(best.correct_count * 100 / best.total_questions) if best and best.total_questions else 0,
-        "best_test": best.test.name if best else None,
-        "today": today_count,
+        "count": 0,
+        "average": 0,
+        "best_percentage": 0,
+        "best_test": None,
+        "today": 0,
     }
 
 
@@ -276,21 +272,19 @@ def admin_dashboard_stats(db: Session) -> dict[str, Any]:
     total_users = db.scalar(select(func.count(User.id))) or 0
     today_users = db.scalar(select(func.count(User.id)).where(User.registered_at >= today_start)) or 0
     week_users = db.scalar(select(func.count(User.id)).where(User.registered_at >= week_start)) or 0
-    total_attempts = db.scalar(select(func.count(Attempt.id)).where(Attempt.finished_at.is_not(None))) or 0
-    today_attempts = db.scalar(select(func.count(Attempt.id)).where(Attempt.finished_at >= today_start)) or 0
+    total_attempts = db.scalar(select(func.count(TestAttemptStat.id))) or 0
+    today_attempts = db.scalar(select(func.count(TestAttemptStat.id)).where(TestAttemptStat.finished_at >= today_start)) or 0
     open_reports = db.scalar(select(func.count(ErrorReport.id)).where(ErrorReport.status == "open")) or 0
     fixed_reports = db.scalar(select(func.count(ErrorReport.id)).where(ErrorReport.status == "fixed")) or 0
 
     average = db.scalar(
-        select(func.avg(Attempt.correct_count * 100.0 / func.nullif(Attempt.total_questions, 0))).where(Attempt.finished_at.is_not(None))
+        select(func.avg(TestAttemptStat.percentage))
     ) or 0
 
     popular = db.execute(
-        select(Test.name, func.count(Attempt.id).label("count"))
-        .join(Attempt, Attempt.test_id == Test.id)
-        .where(Attempt.finished_at.is_not(None))
-        .group_by(Test.id)
-        .order_by(func.count(Attempt.id).desc())
+        select(TestAttemptStat.test_name_snapshot, func.count(TestAttemptStat.id).label("count"))
+        .group_by(TestAttemptStat.test_name_snapshot)
+        .order_by(func.count(TestAttemptStat.id).desc())
         .limit(1)
     ).first()
 
@@ -299,30 +293,25 @@ def admin_dashboard_stats(db: Session) -> dict[str, Any]:
         day_local = today_start_local - timedelta(days=offset)
         next_local = day_local + timedelta(days=1)
         count = db.scalar(
-            select(func.count(Attempt.id)).where(
-                Attempt.finished_at >= day_local.astimezone(timezone.utc),
-                Attempt.finished_at < next_local.astimezone(timezone.utc),
+            select(func.count(TestAttemptStat.id)).where(
+                TestAttemptStat.finished_at >= day_local.astimezone(timezone.utc),
+                TestAttemptStat.finished_at < next_local.astimezone(timezone.utc),
             )
         ) or 0
         last_7.append({"date": day_local.strftime("%d.%m"), "count": count})
 
-    recent_rows = db.execute(
-        select(Attempt, User, Test)
-        .join(User, User.id == Attempt.user_id)
-        .join(Test, Test.id == Attempt.test_id)
-        .where(Attempt.finished_at.is_not(None))
-        .order_by(Attempt.finished_at.desc())
-        .limit(10)
-    ).all()
+    recent_rows = list(
+        db.scalars(select(TestAttemptStat).order_by(TestAttemptStat.finished_at.desc()).limit(10))
+    )
     recent = [
         {
-            "id": attempt.id,
-            "user": user.full_name,
-            "test": test.name,
-            "percentage": round(attempt.correct_count * 100 / attempt.total_questions) if attempt.total_questions else 0,
-            "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
+            "id": stat.id,
+            "user": "Saqlanmagan",
+            "test": stat.test_name_snapshot,
+            "percentage": stat.percentage,
+            "finished_at": stat.finished_at.isoformat(),
         }
-        for attempt, user, test in recent_rows
+        for stat in recent_rows
     ]
 
     return {

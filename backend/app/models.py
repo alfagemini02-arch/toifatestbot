@@ -146,6 +146,19 @@ class AttemptQuestion(Base):
     __table_args__ = (UniqueConstraint("attempt_id", "order_index", name="uq_attempt_order"),)
 
 
+class TestAttemptStat(Base):
+    __tablename__ = "test_attempt_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    test_id: Mapped[int | None] = mapped_column(ForeignKey("tests.id", ondelete="SET NULL"), index=True)
+    test_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)
+    total_questions: Mapped[int] = mapped_column(Integer, nullable=False)
+    correct_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    percentage: Mapped[int] = mapped_column(Integer, nullable=False)
+    spent_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class ErrorReport(Base):
     __tablename__ = "error_reports"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -12,12 +13,25 @@ from .config import get_settings
 from .database import get_db
 from .deps import get_current_admin
 from .importers import ParsedQuestion, parse_uploaded_file
-from .models import Answer, Attempt, ErrorReport, Question, Source, Test, TestRule, utcnow
-from .schemas import ImportCommitRequest, QuestionInput, QuestionMoveRequest, ReportStatusUpdate, SourceCreate, SourceUpdate, TestInput
+from .models import Answer, Attempt, ErrorReport, Question, Source, Test, TestAttemptStat, TestRule, utcnow
+from .schemas import (
+    ImportCommitRequest,
+    QuestionBulkDeleteRequest,
+    QuestionInput,
+    QuestionMoveRequest,
+    ReportStatusUpdate,
+    SourceCreate,
+    SourceUpdate,
+    TestInput,
+)
 from .services import admin_dashboard_stats, serialize_question, serialize_test
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 settings = get_settings()
+
+
+def _duplicate_key(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().casefold())
 
 
 def _source_or_404(db: Session, source_id: int) -> Source:
@@ -227,6 +241,60 @@ def source_questions(
     }
 
 
+@router.get("/sources/{source_id}/duplicates")
+def source_duplicates(source_id: int, db: Session = Depends(get_db)) -> dict:
+    source = _source_or_404(db, source_id)
+    questions = list(
+        db.scalars(
+            select(Question)
+            .options(selectinload(Question.answers), selectinload(Question.source))
+            .where(Question.source_id == source_id)
+            .order_by(Question.id)
+        ).unique()
+    )
+    groups: dict[str, list[Question]] = defaultdict(list)
+    for question in questions:
+        groups[_duplicate_key(question.question_text)].append(question)
+    duplicate_groups = [
+        {
+            "key": key,
+            "count": len(items),
+            "keep_id": items[0].id,
+            "items": [serialize_question(item) for item in items],
+        }
+        for key, items in groups.items()
+        if len(items) > 1
+    ]
+    duplicate_groups.sort(key=lambda group: group["count"], reverse=True)
+    return {
+        "source": {"id": source.id, "name": source.name},
+        "groups": duplicate_groups,
+        "group_count": len(duplicate_groups),
+        "duplicate_question_count": sum(group["count"] for group in duplicate_groups),
+        "delete_candidate_count": sum(group["count"] - 1 for group in duplicate_groups),
+    }
+
+
+@router.post("/sources/{source_id}/duplicates/deduplicate")
+def deduplicate_source(source_id: int, db: Session = Depends(get_db)) -> dict:
+    _source_or_404(db, source_id)
+    questions = list(
+        db.scalars(select(Question).where(Question.source_id == source_id).order_by(Question.id))
+    )
+    groups: dict[str, list[Question]] = defaultdict(list)
+    for question in questions:
+        groups[_duplicate_key(question.question_text)].append(question)
+
+    delete_ids: list[int] = []
+    for items in groups.values():
+        if len(items) > 1:
+            delete_ids.extend(question.id for question in items[1:])
+    if delete_ids:
+        db.execute(delete(Question).where(Question.id.in_(delete_ids)))
+        db.commit()
+    return {"deleted": len(delete_ids), "kept": sum(1 for items in groups.values() if len(items) > 1)}
+
+
 @router.get("/questions/{question_id}")
 def get_question(question_id: int, db: Session = Depends(get_db)) -> dict:
     return serialize_question(_question_or_404(db, question_id))
@@ -263,6 +331,17 @@ def delete_question(question_id: int, db: Session = Depends(get_db)) -> dict:
     db.delete(question)
     db.commit()
     return {"deleted": True}
+
+
+@router.post("/questions/bulk-delete")
+def bulk_delete_questions(payload: QuestionBulkDeleteRequest, db: Session = Depends(get_db)) -> dict:
+    existing_ids = set(db.scalars(select(Question.id).where(Question.id.in_(payload.question_ids))))
+    missing = [question_id for question_id in payload.question_ids if question_id not in existing_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"{len(missing)} ta savol topilmadi")
+    db.execute(delete(Question).where(Question.id.in_(payload.question_ids)))
+    db.commit()
+    return {"deleted": len(payload.question_ids)}
 
 
 @router.post("/questions/move")
@@ -324,7 +403,7 @@ def _write_test_rules(db: Session, test: Test, payload: TestInput) -> None:
 
 @router.get("/tests")
 def list_admin_tests(db: Session = Depends(get_db)) -> list[dict]:
-    attempts_count = select(func.count(Attempt.id)).where(Attempt.test_id == Test.id, Attempt.finished_at.is_not(None)).correlate(Test).scalar_subquery()
+    attempts_count = select(func.count(TestAttemptStat.id)).where(TestAttemptStat.test_id == Test.id).correlate(Test).scalar_subquery()
     tests = list(
         db.scalars(
             select(Test)

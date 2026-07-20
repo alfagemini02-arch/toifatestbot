@@ -32,7 +32,7 @@ from .config import get_settings
 from .database import SessionLocal
 from .models import Broadcast, ErrorReport, User, utcnow
 from .security import create_webapp_login_token
-from .services import admin_dashboard_stats, user_stats
+from .services import admin_dashboard_stats
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -229,19 +229,10 @@ async def personal_stats(message: Message) -> None:
         if not user:
             await message.answer("Avval /start orqali ro'yxatdan o'ting.")
             return
-        stats = user_stats(db, user)
-        registered = user.registered_at.astimezone(TASHKENT).strftime("%d.%m.%Y")
-        best_line = f"{stats['best_percentage']}%"
-        if stats["best_test"]:
-            best_line += f" ({html.escape(stats['best_test'])})"
         await message.answer(
-            "📊 <b>Sizning statistikangiz</b>\n\n"
-            f"👤 Ism: {html.escape(user.full_name)}\n"
-            f"📅 Ro'yxatdan o'tgan sana: {registered}\n\n"
-            f"✅ Ishlangan testlar: {stats['count']} ta\n"
-            f"🎯 O'rtacha natija: {stats['average']}%\n"
-            f"🏆 Eng yaxshi natija: {best_line}\n"
-            f"📆 Bugun ishlangan: {stats['today']} ta"
+            "📊 <b>Statistika</b>\n\n"
+            "Shaxsiy test tarixi bazada saqlanmaydi. Har bir test yakunida natijangiz ekranda ko'rsatiladi.\n\n"
+            "Umumiy anonim statistika faqat admin panel uchun yuritiladi."
         )
 
 
