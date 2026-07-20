@@ -59,6 +59,7 @@ let token = sessionStorage.getItem('user_token') || '';
 let currentAttempt: Attempt | null = null;
 let currentIndex = 0;
 let timerId: number | null = null;
+let autoAdvanceTimerId: number | null = null;
 let backHandler: (() => void) | null = null;
 
 function escapeHtml(value: unknown): string {
@@ -173,7 +174,7 @@ function modal(title: string, body: string, confirmText = 'Tasdiqlash'): Promise
 }
 
 async function showHome(): Promise<void> {
-  clearTimer(); setBack(); loading();
+  clearTimer(); clearAutoAdvance(); setBack(); loading();
   try {
     const [me, tests] = await Promise.all([
       api<{ full_name: string }>('/api/me'),
@@ -191,6 +192,7 @@ async function showHome(): Promise<void> {
 async function startTest(testId: number, test: TestItem): Promise<void> {
   const accepted = await modal('Testni boshlaysizmi?', `<p><strong>${escapeHtml(test.name)}</strong></p><p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ''}.</p>`, 'Boshlash');
   if (!accepted) return;
+  clearAutoAdvance();
   loading('Test tayyorlanmoqda...');
   try {
     currentAttempt = await api<Attempt>('/api/attempts', { method: 'POST', body: JSON.stringify({ test_id: testId }) });
@@ -208,6 +210,7 @@ async function openAttempt(attemptId: number): Promise<void> {
 }
 
 function clearTimer(): void { if (timerId !== null) { window.clearInterval(timerId); timerId = null; } }
+function clearAutoAdvance(): void { if (autoAdvanceTimerId !== null) { window.clearTimeout(autoAdvanceTimerId); autoAdvanceTimerId = null; } }
 function formatTime(seconds: number): string { const m = Math.floor(seconds / 60); const s = seconds % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
 
 function startTimer(initial: number | null): void {
@@ -294,6 +297,8 @@ async function answerCurrent(answerId: number): Promise<void> {
   if (!currentAttempt) return;
   const question = currentAttempt.questions[currentIndex];
   if (question.selected_answer_id !== null || question.checking_answer_id != null) return;
+  clearAutoAdvance();
+  const answeredIndex = currentIndex;
   question.checking_answer_id = answerId;
   renderAttempt();
   try {
@@ -307,11 +312,14 @@ async function answerCurrent(answerId: number): Promise<void> {
     question.answers = question.answers.map(answer => ({ ...answer, correct: answer.id === result.correct_answer_id }));
     tg?.HapticFeedback?.notificationOccurred(result.is_correct ? 'success' : 'error');
     renderAttempt();
-    window.setTimeout(() => {
+    clearAutoAdvance();
+    autoAdvanceTimerId = window.setTimeout(() => {
+      autoAdvanceTimerId = null;
       if (!currentAttempt) return;
-      const next = currentAttempt.questions.findIndex((item, index) => index > currentIndex && item.selected_answer_id === null);
-      const wrap = currentAttempt.questions.findIndex(item => item.selected_answer_id === null);
-      const destination = next >= 0 ? next : wrap;
+      if (currentIndex !== answeredIndex) return;
+      const next = currentAttempt.questions.findIndex((item, index) => index > answeredIndex && item.selected_answer_id === null);
+      const previous = currentAttempt.questions.map((item, index) => ({ item, index })).reverse().find(row => row.index < answeredIndex && row.item.selected_answer_id === null)?.index ?? -1;
+      const destination = next >= 0 ? next : previous;
       if (destination >= 0) { currentIndex = destination; renderAttempt(); }
     }, 3000);
   } catch (error) { question.checking_answer_id = null; toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
@@ -329,7 +337,7 @@ async function finishTest(auto: boolean): Promise<void> {
     const accepted = await modal('Testni yakunlaysizmi?', `<p>Javob berilgan: <strong>${answered}</strong> ta</p><p>Javob berilmagan: <strong>${currentAttempt.total_questions - answered}</strong> ta</p>`, 'Ha, yakunlash');
     if (!accepted) return;
   }
-  clearTimer(); loading(auto ? 'Vaqt tugadi. Natija hisoblanmoqda...' : 'Natija hisoblanmoqda...');
+  clearTimer(); clearAutoAdvance(); loading(auto ? 'Vaqt tugadi. Natija hisoblanmoqda...' : 'Natija hisoblanmoqda...');
   try { const result = await api<Result>(`/api/attempts/${currentAttempt.id}/finish`, { method: 'POST' }); showResult(result); }
   catch (error) { toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
 }
