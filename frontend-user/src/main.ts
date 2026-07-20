@@ -20,7 +20,7 @@ declare global {
   }
 }
 
-type TestItem = { id: number; name: string; time_limit_minutes: number; total_questions: number };
+type TestItem = { id: number; name: string; test_mode: 'exam' | 'classifier'; time_limit_minutes: number; total_questions: number };
 type Answer = { id: number; text: string; correct?: boolean };
 type AttemptQuestion = {
   id: number;
@@ -37,6 +37,7 @@ type Attempt = {
   id: number;
   test_id: number;
   test_name: string;
+  test_mode: 'exam' | 'classifier';
   started_at: string;
   finished_at: string | null;
   total_questions: number;
@@ -48,6 +49,7 @@ type Attempt = {
 type Result = {
   attempt_id: number; test_name: string; total: number; answered: number; correct: number;
   incorrect: number; unanswered: number; percentage: number; spent_seconds: number;
+  test_mode?: 'exam' | 'classifier';
   topic_stats?: Array<{ topic: string; total: number; correct: number; percentage: number }>;
 };
 
@@ -183,14 +185,17 @@ async function showHome(): Promise<void> {
     app.innerHTML = `<main class="page home-page">
       <header class="welcome"><div><p class="eyebrow">Testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Kerakli testni tanlang, yakunda natijangizni ko'rasiz.</p></div><div class="avatar">${escapeHtml(me.full_name.charAt(0).toUpperCase())}</div></header>
       <section><div class="section-title"><h2>Faol testlar</h2><span>${tests.length} ta</span></div><div class="test-grid">${tests.length ? tests.map(test => `
-        <article class="test-card" data-test-id="${test.id}"><div class="test-icon">T</div><div class="test-info"><h3>${escapeHtml(test.name)}</h3><p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ', vaqt cheklanmagan'}</p></div><button class="circle-button" aria-label="Boshlash">›</button></article>`).join('') : '<div class="empty">Hozircha faol test mavjud emas.</div>'}</div></section>
+        <article class="test-card" data-test-id="${test.id}"><div class="test-icon">${test.test_mode === 'classifier' ? 'A' : 'T'}</div><div class="test-info"><h3>${escapeHtml(test.name)}</h3><p>${test.test_mode === 'classifier' ? 'Savollarni ajratish sinovi' : `${test.total_questions} ta savol`}${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ', vaqt cheklanmagan'}</p></div><button class="circle-button" aria-label="Boshlash">›</button></article>`).join('') : '<div class="empty">Hozircha faol test mavjud emas.</div>'}</div></section>
     </main>`;
     document.querySelectorAll<HTMLElement>('[data-test-id]').forEach(card => card.addEventListener('click', () => startTest(Number(card.dataset.testId), tests.find(t => t.id === Number(card.dataset.testId))!)));
   } catch (error) { showFatal(error); }
 }
 
 async function startTest(testId: number, test: TestItem): Promise<void> {
-  const accepted = await modal('Testni boshlaysizmi?', `<p><strong>${escapeHtml(test.name)}</strong></p><p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ''}.</p>`, 'Boshlash');
+  const description = test.test_mode === 'classifier'
+    ? `<p>Har bir savol bo'yicha u o'tgan yili tushgan yoki tushmaganligini belgilang.</p>`
+    : `<p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ''}.</p>`;
+  const accepted = await modal('Testni boshlaysizmi?', `<p><strong>${escapeHtml(test.name)}</strong></p>${description}`, 'Boshlash');
   if (!accepted) return;
   clearAutoAdvance();
   loading('Test tayyorlanmoqda...');
@@ -231,6 +236,10 @@ function startTimer(initial: number | null): void {
 
 function renderAttempt(): void {
   if (!currentAttempt) return;
+  if (currentAttempt.test_mode === 'classifier') {
+    renderClassifierAttempt();
+    return;
+  }
   setBack(() => void confirmLeave());
   const question = currentAttempt.questions[currentIndex];
   const answered = currentAttempt.questions.filter(q => q.selected_answer_id !== null).length;
@@ -255,6 +264,29 @@ function renderAttempt(): void {
   document.querySelectorAll<HTMLElement>('[data-index]').forEach(button => button.addEventListener('click', () => { currentIndex = Number(button.dataset.index); renderAttempt(); }));
   document.querySelectorAll<HTMLButtonElement>('[data-answer-id]').forEach(button => button.addEventListener('click', () => answerCurrent(Number(button.dataset.answerId))));
   document.querySelector('#report-question')?.addEventListener('click', () => reportCurrentQuestion(question));
+  document.querySelector('#prev')?.addEventListener('click', () => { currentIndex--; renderAttempt(); });
+  document.querySelector('#next')?.addEventListener('click', () => { currentIndex++; renderAttempt(); });
+  document.querySelector('#finish')?.addEventListener('click', () => finishTest(false));
+  window.setTimeout(() => document.querySelector('.q-dot.current')?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }), 50);
+}
+
+function renderClassifierAttempt(): void {
+  if (!currentAttempt) return;
+  setBack(() => void confirmLeave());
+  const question = currentAttempt.questions[currentIndex];
+  const answered = currentAttempt.questions.filter(q => q.selected_answer_id !== null).length;
+  const isLocked = question.selected_answer_id !== null || question.checking_answer_id != null;
+  const appearedSelected = question.selected_answer_id === 1;
+  const missedSelected = question.selected_answer_id === 0;
+  app.innerHTML = `<main class="test-page classifier-page">
+    <header class="test-header"><div><span class="eyebrow">Ajratish sinovi</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
+    <details class="question-picker"><summary><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><b>Savollar ro'yxati</b></summary><nav class="question-nav" id="question-nav">${currentAttempt.questions.map((item, index) => `<button class="q-dot ${index === currentIndex ? 'current' : ''} ${item.is_correct === true ? 'correct' : item.selected_answer_id === 0 ? 'wrong' : ''}" data-index="${index}">${index + 1}</button>`).join('')}</nav></details>
+    <section class="question-wrap"><div class="progress-line"><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><span>${answered} ta belgilandi</span></div><article class="question-card classifier-card"><h2>${escapeHtml(question.question_text)}</h2>${question.answers.length ? `<div class="readonly-answers">${question.answers.map((answer, index) => `<div><span>${String.fromCharCode(65 + index)}</span><b>${escapeHtml(answer.text)}</b></div>`).join('')}</div>` : ''}<div class="classifier-actions"><button class="appeared ${appearedSelected ? 'selected' : ''}" id="appeared" ${isLocked ? 'disabled' : ''}>Tushgan</button><button class="missed ${missedSelected ? 'selected' : ''}" id="missed" ${isLocked ? 'disabled' : ''}>Tushmagan</button></div>${question.checking_answer_id != null ? '<p class="classifier-note">Belgilanmoqda...</p>' : question.selected_answer_id !== null ? '<p class="classifier-note">Qaroringiz saqlandi</p>' : '<p class="classifier-note">Savol o‘tgan yili tushgan deb o‘ylasangiz “Tushgan”ni bosing.</p>'}</article><div class="pager"><button class="ghost" id="prev" ${currentIndex === 0 ? 'disabled' : ''}>Oldingi</button><button class="ghost" id="next" ${currentIndex === currentAttempt.questions.length - 1 ? 'disabled' : ''}>Keyingi</button></div><div class="finish-row"><button class="finish finish-inline" id="finish">Sinovni yakunlash</button></div></section>
+  </main>`;
+  startTimer(currentAttempt.remaining_seconds);
+  document.querySelectorAll<HTMLElement>('[data-index]').forEach(button => button.addEventListener('click', () => { currentIndex = Number(button.dataset.index); renderAttempt(); }));
+  document.querySelector('#appeared')?.addEventListener('click', () => classifyCurrent(true));
+  document.querySelector('#missed')?.addEventListener('click', () => classifyCurrent(false));
   document.querySelector('#prev')?.addEventListener('click', () => { currentIndex--; renderAttempt(); });
   document.querySelector('#next')?.addEventListener('click', () => { currentIndex++; renderAttempt(); });
   document.querySelector('#finish')?.addEventListener('click', () => finishTest(false));
@@ -325,6 +357,40 @@ async function answerCurrent(answerId: number): Promise<void> {
   } catch (error) { question.checking_answer_id = null; toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
 }
 
+async function classifyCurrent(appeared: boolean): Promise<void> {
+  if (!currentAttempt) return;
+  const question = currentAttempt.questions[currentIndex];
+  if (question.selected_answer_id !== null || question.checking_answer_id != null) return;
+  clearAutoAdvance();
+  const answeredIndex = currentIndex;
+  question.checking_answer_id = appeared ? 1 : 0;
+  renderAttempt();
+  try {
+    const result = await api<{ selected_answer_id: number; appeared: boolean; appeared_count: number; promoted: boolean }>(`/api/attempts/${currentAttempt.id}/classification`, {
+      method: 'POST',
+      body: JSON.stringify({ question_id: question.question_id, appeared }),
+    });
+    question.selected_answer_id = result.selected_answer_id;
+    question.is_correct = result.appeared;
+    question.checking_answer_id = null;
+    tg?.HapticFeedback?.notificationOccurred('success');
+    if (result.promoted) toast("Savol 'Haqiqiy tushgan' manbasiga qo'shildi");
+    renderAttempt();
+    autoAdvanceTimerId = window.setTimeout(() => {
+      autoAdvanceTimerId = null;
+      if (!currentAttempt || currentIndex !== answeredIndex) return;
+      const next = currentAttempt.questions.findIndex((item, index) => index > answeredIndex && item.selected_answer_id === null);
+      const previous = currentAttempt.questions.map((item, index) => ({ item, index })).reverse().find(row => row.index < answeredIndex && row.item.selected_answer_id === null)?.index ?? -1;
+      const destination = next >= 0 ? next : previous;
+      if (destination >= 0) { currentIndex = destination; renderAttempt(); }
+    }, 700);
+  } catch (error) {
+    question.checking_answer_id = null;
+    toast(error instanceof Error ? error.message : String(error));
+    renderAttempt();
+  }
+}
+
 async function confirmLeave(): Promise<void> {
   const accepted = await modal('Testdan chiqasizmi?', '<p>Testlar sahifasiga qaytasiz. Yangi test boshlanganda eski tugallanmagan urinish tozalanadi.</p>', 'Chiqish');
   if (accepted) await showHome();
@@ -352,8 +418,9 @@ function evaluation(percentage: number): string {
 function showResult(result: Result): void {
   setBack(() => void showHome());
   const minutes = Math.floor(result.spent_seconds / 60); const seconds = result.spent_seconds % 60;
+  const isClassifier = result.test_mode === 'classifier';
   const topics = result.topic_stats?.length ? `<div class="topic-results">${result.topic_stats.map(item => `<div><span>${escapeHtml(item.topic)}</span><b>${item.correct}/${item.total} (${item.percentage}%)</b></div>`).join('')}</div>` : '';
-  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${result.percentage}%</strong><span>natija</span></div></div><h2>${evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>To'g'ri</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>Noto'g'ri</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div>${topics}<div class="result-actions"><button class="secondary" id="share-result">Natijani rasm qilish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
+  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${isClassifier ? 'OK' : result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${isClassifier ? result.answered : `${result.percentage}%`}</strong><span>${isClassifier ? 'belgilandi' : 'natija'}</span></div></div><h2>${isClassifier ? 'Ajratish yakunlandi' : evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>${isClassifier ? 'Tushgan' : "To'g'ri"}</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>${isClassifier ? 'Tushmagan' : "Noto'g'ri"}</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div>${isClassifier ? '' : topics}<div class="result-actions"><button class="secondary" id="share-result">Natijani rasm qilish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
   document.querySelector('#share-result')?.addEventListener('click', () => shareResultImage(result));
   document.querySelector('#retry-test')?.addEventListener('click', async () => {
     if (!currentAttempt) return; const tests = await api<TestItem[]>('/api/tests'); const test = tests.find(item => item.id === currentAttempt!.test_id); if (test) await startTest(test.id, test);
