@@ -6,7 +6,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .models import Attempt, AttemptQuestion, ErrorReport, Question, Test, TestAttemptStat, User
@@ -90,8 +90,9 @@ def create_attempt(db: Session, user: User, test: Test) -> Attempt:
     db.flush()
 
     for index, question in enumerate(selected_questions, start=1):
+        explanation = question.explanation
         answer_snapshot = [
-            {"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct}
+            {"id": answer.id, "text": answer.answer_text, "correct": answer.is_correct, "_explanation": explanation}
             for answer in question.answers
         ]
         random.shuffle(answer_snapshot)
@@ -185,17 +186,64 @@ def submit_answer(db: Session, attempt: Attempt, question_id: int, answer_id: in
         raise HTTPException(status_code=422, detail="Javob varianti ushbu savolga tegishli emas")
 
     correct_answer = next(value for value in item.answers_snapshot if value.get("correct"))
+    is_correct = bool(answer.get("correct"))
+    correct_answer_id = int(correct_answer["id"])
+    explanation = next((str(value.get("_explanation")) for value in item.answers_snapshot if value.get("_explanation")), None)
     item.selected_answer_id = answer_id
-    item.is_correct = bool(answer.get("correct"))
-    if item.is_correct:
+    item.is_correct = is_correct
+    if is_correct:
         attempt.correct_count += 1
     db.commit()
-    source_question = db.scalar(select(Question).where(Question.id == item.question_id)) if item.question_id else None
     return {
-        "is_correct": item.is_correct,
-        "correct_answer_id": int(correct_answer["id"]),
+        "is_correct": is_correct,
+        "correct_answer_id": correct_answer_id,
         "selected_answer_id": answer_id,
-        "explanation": source_question.explanation if source_question else None,
+        "explanation": explanation,
+    }
+
+
+def submit_answer_by_id(db: Session, attempt_id: int, user_id: int, question_id: int, answer_id: int) -> dict[str, Any]:
+    attempt = db.scalar(
+        select(Attempt)
+        .options(selectinload(Attempt.test))
+        .where(Attempt.id == attempt_id, Attempt.user_id == user_id)
+    )
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Urinish topilmadi")
+    if attempt.finished_at:
+        raise HTTPException(status_code=409, detail="Test allaqachon yakunlangan")
+    if auto_finish_if_expired(db, attempt):
+        raise HTTPException(status_code=409, detail="Test vaqti tugagan")
+
+    item = db.scalar(
+        select(AttemptQuestion).where(
+            AttemptQuestion.attempt_id == attempt.id,
+            or_(AttemptQuestion.question_id == question_id, AttemptQuestion.id == question_id),
+        )
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Savol ushbu urinishga tegishli emas")
+    if item.selected_answer_id is not None:
+        raise HTTPException(status_code=409, detail="Bu savolga avval javob berilgan")
+
+    answer = next((value for value in item.answers_snapshot if int(value["id"]) == answer_id), None)
+    if not answer:
+        raise HTTPException(status_code=422, detail="Javob varianti ushbu savolga tegishli emas")
+
+    correct_answer = next(value for value in item.answers_snapshot if value.get("correct"))
+    is_correct = bool(answer.get("correct"))
+    correct_answer_id = int(correct_answer["id"])
+    explanation = next((str(value.get("_explanation")) for value in item.answers_snapshot if value.get("_explanation")), None)
+    item.selected_answer_id = answer_id
+    item.is_correct = is_correct
+    if is_correct:
+        attempt.correct_count += 1
+    db.commit()
+    return {
+        "is_correct": is_correct,
+        "correct_answer_id": correct_answer_id,
+        "selected_answer_id": answer_id,
+        "explanation": explanation,
     }
 
 

@@ -16,7 +16,7 @@ from .services import (
     review_attempt,
     serialize_attempt,
     serialize_test,
-    submit_answer,
+    submit_answer_by_id,
     user_stats,
 )
 
@@ -93,8 +93,7 @@ def answer_question(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    attempt = get_attempt(db, attempt_id, user.id)
-    return submit_answer(db, attempt, payload.question_id, payload.answer_id)
+    return submit_answer_by_id(db, attempt_id, user.id, payload.question_id, payload.answer_id)
 
 
 @router.post("/questions/{question_id}/reports", status_code=201)
