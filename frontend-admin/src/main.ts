@@ -188,14 +188,24 @@ async function moveSelectedQuestions(currentSourceId: number, refresh: () => voi
     const form = new FormData(event.currentTarget as HTMLFormElement);
     button.disabled = true;
     try {
-      const result = await api<any>('/api/admin/questions/move', { method: 'POST', body: JSON.stringify({ question_ids: [...selectedQuestionIds], target_source_id: Number(form.get('target_source_id')) }) });
+      const ids = [...selectedQuestionIds];
+      const targetSourceId = Number(form.get('target_source_id'));
+      const chunkSize = 500;
+      let moved = 0;
+      for (let index = 0; index < ids.length; index += chunkSize) {
+        const chunk = ids.slice(index, index + chunkSize);
+        button.textContent = `Ko‘chirilmoqda ${Math.min(index + chunk.length, ids.length)}/${ids.length}`;
+        const result = await api<any>('/api/admin/questions/move', { method: 'POST', body: JSON.stringify({ question_ids: chunk, target_source_id: targetSourceId }) });
+        moved += Number(result.moved || 0);
+      }
       closeModal();
       sourceCache = [];
-      toast(`✅ ${result.moved} ta savol ko‘chirildi`);
+      toast(`✅ ${moved} ta savol ko‘chirildi`);
       refresh();
     } catch (error) {
-      document.querySelector('#move-error')!.textContent = error instanceof Error ? error.message : String(error);
+      showFormError('#move-error', error);
       button.disabled = false;
+      button.textContent = 'Ko‘chirish';
     }
   });
 }
