@@ -53,7 +53,7 @@ class QuestionInput(BaseModel):
 
 
 class QuestionMoveRequest(BaseModel):
-    question_ids: Annotated[list[int], Field(min_length=1, max_length=1000)]
+    question_ids: Annotated[list[int], Field(min_length=1, max_length=10000)]
     target_source_id: int
 
     @field_validator("question_ids")
