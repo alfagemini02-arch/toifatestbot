@@ -65,11 +65,19 @@ def test_admin_and_user_api_flow() -> None:
             json={
                 'name': 'API testi',
                 'time_limit_minutes': 10,
+                'group_question_seconds': 45,
+                'group_start_vote_count': 7,
+                'group_start_vote_seconds': 90,
+                'group_stop_vote_count': 6,
+                'group_stop_vote_seconds': 45,
                 'is_active': True,
                 'rules': [{'source_id': source_id, 'question_count': 1}],
             },
         )
         assert test_response.status_code == 201, test_response.text
+        assert test_response.json()['group_question_seconds'] == 45
+        assert test_response.json()['group_start_vote_count'] == 7
+        assert test_response.json()['group_stop_vote_seconds'] == 45
         test_id = test_response.json()['id']
 
         dev_login = client.post('/api/auth/dev', json={'full_name': 'API user'})
