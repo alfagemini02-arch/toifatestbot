@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
@@ -67,6 +67,20 @@ def health() -> dict:
     return {"status": "ok", "service": settings.app_name}
 
 
+@app.head("/api/health", include_in_schema=False)
+def health_head() -> Response:
+    with SessionLocal() as db:
+        db.execute(text("SELECT 1"))
+    return Response(status_code=200)
+
+
+@app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
+def uptime_health() -> Response:
+    with SessionLocal() as db:
+        db.execute(text("SELECT 1"))
+    return Response(content="OK", media_type="text/plain", status_code=200)
+
+
 @app.post("/api/telegram/webhook", include_in_schema=False)
 async def telegram_webhook(
     request: Request,
@@ -84,6 +98,11 @@ async def telegram_webhook(
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/app/")
+
+
+@app.head("/", include_in_schema=False)
+def root_head() -> Response:
+    return Response(status_code=200)
 
 
 static_root = Path("static")
