@@ -10,3 +10,16 @@ def test_health_endpoint() -> None:
         response = client.get('/api/health')
     assert response.status_code == 200
     assert response.json()['status'] == 'ok'
+
+
+def test_uptime_head_root() -> None:
+    with TestClient(app) as client:
+        response = client.head('/')
+    assert response.status_code == 200
+    assert response.content == b''
+
+
+def test_uptime_head_health() -> None:
+    with TestClient(app) as client:
+        response = client.head('/health')
+    assert response.status_code == 200
