@@ -1,0 +1,1 @@
+"""NazoratBot Telegram package."""

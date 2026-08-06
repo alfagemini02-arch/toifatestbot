@@ -1,101 +1,131 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 
-from .api_admin import router as admin_router
-from .api_auth import router as auth_router
-from .api_user import router as user_router
-from .bot import process_update, setup_bot, shutdown_bot
-from .config import get_settings
-from .database import SessionLocal
-from .seed import initialize_database
+from app.config import Settings, get_settings
+from app.admin_panel import setup_admin_routes
+from app.handlers import build_router
+from app.storage import UserStorage, create_user_storage
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
 logger = logging.getLogger(__name__)
-settings = get_settings()
+APP_VERSION = "2026-07-26-admin-js-fix-v7"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ANN201, ARG001
-    initialize_database()
-    await setup_bot()
-    yield
-    await shutdown_bot()
-
-
-app = FastAPI(
-    title=settings.app_name,
-    version="1.0.0",
-    default_response_class=ORJSONResponse,
-    docs_url="/api/docs" if settings.debug else None,
-    redoc_url=None,
-    lifespan=lifespan,
-)
-
-origins = settings.allowed_origins or [settings.normalized_webapp_url]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Telegram-Bot-Api-Secret-Token"],
-)
-trusted_hosts = settings.trusted_hosts or ["*"]
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
-
-app.include_router(auth_router)
-app.include_router(user_router)
-app.include_router(admin_router)
-
-
-@app.get("/api/health")
-def health() -> dict:
-    with SessionLocal() as db:
-        db.execute(text("SELECT 1"))
-    return {"status": "ok", "service": settings.app_name}
-
-
-@app.post("/api/telegram/webhook", include_in_schema=False)
-async def telegram_webhook(
-    request: Request,
-    x_telegram_bot_api_secret_token: str | None = Header(default=None),
-) -> dict:
+def create_bot(settings: Settings) -> Bot:
     if not settings.bot_token:
-        raise HTTPException(status_code=503, detail="Bot sozlanmagan")
-    if not settings.webhook_secret or x_telegram_bot_api_secret_token != settings.webhook_secret:
-        raise HTTPException(status_code=403, detail="Webhook secret noto'g'ri")
-    payload = await request.json()
-    await process_update(payload)
-    return {"ok": True}
+        raise RuntimeError("BOT_TOKEN topilmadi. .env yoki Render Environment Variables ichiga BOT_TOKEN kiriting.")
+    return Bot(
+        token=settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
 
 
-@app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/app/")
+def create_dispatcher(settings: Settings) -> tuple[Dispatcher, UserStorage]:
+    user_database_url = getattr(settings, "user_database_url", "")
+    user_storage = create_user_storage(settings.database_path, settings.timezone, user_database_url)
+    dispatcher = Dispatcher(storage=MemoryStorage())
+    dispatcher.include_router(build_router(user_storage, settings))
+    return dispatcher, user_storage
 
 
-static_root = Path("static")
-user_static = static_root / "user"
-admin_static = static_root / "admin"
+async def start_health_server(settings: Settings) -> None:
+    from aiohttp import web
 
-if user_static.exists():
-    app.mount("/app", StaticFiles(directory=user_static, html=True), name="user-app")
-else:
-    logger.warning("User frontend build topilmadi: %s", user_static)
+    async def index(_: web.Request) -> web.Response:
+        return web.Response(
+            text="NazoratBot Telegram xizmati ishlayapti.\nHealth: /health\n",
+            content_type="text/plain",
+        )
 
-if admin_static.exists():
-    app.mount("/admin", StaticFiles(directory=admin_static, html=True), name="admin-app")
-else:
-    logger.warning("Admin frontend build topilmadi: %s", admin_static)
+    async def health(_: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "service": "nazoratbot-telegram", "version": APP_VERSION})
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/health", health)
+    setup_admin_routes(app, settings)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, settings.web_host, settings.web_port)
+    await site.start()
+    logger.info("Health server started on http://%s:%s version=%s", settings.web_host, settings.web_port, APP_VERSION)
+
+
+async def run_polling() -> None:
+    settings = get_settings()
+    bot = create_bot(settings)
+    dispatcher, user_storage = create_dispatcher(settings)
+
+    await user_storage.init()
+    await start_health_server(settings)
+    logger.info("Starting Telegram polling mode. Existing webhook will be deleted.")
+    await bot.delete_webhook(drop_pending_updates=True)
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await user_storage.close()
+        await bot.session.close()
+
+
+def run_webhook() -> None:
+    from aiohttp import web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+    settings = get_settings()
+    if not settings.webhook_url:
+        raise RuntimeError("BOT_MODE=webhook uchun WEBHOOK_URL kiritilishi kerak.")
+
+    bot = create_bot(settings)
+    dispatcher, user_storage = create_dispatcher(settings)
+    webhook_url = settings.webhook_url.rstrip("/") + settings.webhook_path
+
+    async def index(_: web.Request) -> web.Response:
+        return web.Response(
+            text="NazoratBot Telegram xizmati ishlayapti.\nHealth: /health\nWebhook: /webhook\n",
+            content_type="text/plain",
+        )
+
+    async def health(_: web.Request) -> web.Response:
+        return web.json_response(
+            {"ok": True, "service": "nazoratbot-telegram", "mode": "webhook", "version": APP_VERSION}
+        )
+
+    async def on_startup(bot: Bot) -> None:
+        await user_storage.init()
+        logger.info("Setting Telegram webhook: %s", webhook_url)
+        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+
+    async def on_shutdown(bot: Bot) -> None:
+        await user_storage.close()
+        await bot.session.close()
+
+    dispatcher.startup.register(on_startup)
+    dispatcher.shutdown.register(on_shutdown)
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/health", health)
+    setup_admin_routes(app, settings)
+    SimpleRequestHandler(dispatcher=dispatcher, bot=bot).register(app, path=settings.webhook_path)
+    setup_application(app, dispatcher, bot=bot)
+    web.run_app(app, host=settings.web_host, port=settings.web_port)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    settings = get_settings()
+    if settings.bot_mode == "webhook":
+        run_webhook()
+    else:
+        asyncio.run(run_polling())
+
+
+if __name__ == "__main__":
+    main()
