@@ -102,8 +102,8 @@ async def telegram_webhook(
     return {"ok": True}
 
 
-@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
-def root(request: Request) -> RedirectResponse | Response:
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False, response_model=None)
+def root(request: Request) -> Response:
     if request.method == "HEAD":
         return Response(status_code=200)
     return RedirectResponse(url="/app/")
