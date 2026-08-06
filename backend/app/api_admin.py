@@ -519,7 +519,17 @@ def get_admin_test(test_id: int, db: Session = Depends(get_db)) -> dict:
 @router.post("/tests", status_code=201)
 def create_test(payload: TestInput, db: Session = Depends(get_db)) -> dict:
     _validate_test_rules(db, payload)
-    test = Test(name=payload.name.strip(), test_mode=payload.test_mode, time_limit_minutes=payload.time_limit_minutes, is_active=payload.is_active)
+    test = Test(
+        name=payload.name.strip(),
+        test_mode=payload.test_mode,
+        time_limit_minutes=payload.time_limit_minutes,
+        group_question_seconds=payload.group_question_seconds,
+        group_start_vote_count=payload.group_start_vote_count,
+        group_start_vote_seconds=payload.group_start_vote_seconds,
+        group_stop_vote_count=payload.group_stop_vote_count,
+        group_stop_vote_seconds=payload.group_stop_vote_seconds,
+        is_active=payload.is_active,
+    )
     db.add(test)
     try:
         db.flush()
@@ -538,6 +548,11 @@ def update_test(test_id: int, payload: TestInput, db: Session = Depends(get_db))
     test.name = payload.name.strip()
     test.test_mode = payload.test_mode
     test.time_limit_minutes = payload.time_limit_minutes
+    test.group_question_seconds = payload.group_question_seconds
+    test.group_start_vote_count = payload.group_start_vote_count
+    test.group_start_vote_seconds = payload.group_start_vote_seconds
+    test.group_stop_vote_count = payload.group_stop_vote_count
+    test.group_stop_vote_seconds = payload.group_stop_vote_seconds
     test.is_active = payload.is_active
     try:
         _write_test_rules(db, test, payload)

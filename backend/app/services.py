@@ -52,6 +52,11 @@ def serialize_test(test: Test, include_rules: bool = True) -> dict[str, Any]:
         "name": test.name,
         "test_mode": test.test_mode,
         "time_limit_minutes": test.time_limit_minutes,
+        "group_question_seconds": test.group_question_seconds,
+        "group_start_vote_count": test.group_start_vote_count,
+        "group_start_vote_seconds": test.group_start_vote_seconds,
+        "group_stop_vote_count": test.group_stop_vote_count,
+        "group_stop_vote_seconds": test.group_stop_vote_seconds,
         "is_active": test.is_active,
         "total_questions": test_total_questions(test),
     }

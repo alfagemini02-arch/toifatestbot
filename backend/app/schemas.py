@@ -86,6 +86,11 @@ class TestInput(BaseModel):
     name: Annotated[str, Field(min_length=2, max_length=255)]
     test_mode: Annotated[str, Field(pattern="^(exam|classifier)$")] = "exam"
     time_limit_minutes: Annotated[int, Field(ge=0, le=1440)] = 0
+    group_question_seconds: Annotated[int, Field(ge=5, le=600)] = 30
+    group_start_vote_count: Annotated[int, Field(ge=1, le=1000)] = 10
+    group_start_vote_seconds: Annotated[int, Field(ge=15, le=600)] = 120
+    group_stop_vote_count: Annotated[int, Field(ge=1, le=1000)] = 10
+    group_stop_vote_seconds: Annotated[int, Field(ge=15, le=600)] = 60
     is_active: bool = True
     rules: Annotated[list[TestRuleInput], Field(min_length=1, max_length=100)]
 

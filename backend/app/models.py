@@ -91,6 +91,11 @@ class Test(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     test_mode: Mapped[str] = mapped_column(String(30), default="exam", index=True, nullable=False)
     time_limit_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    group_question_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    group_start_vote_count: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    group_start_vote_seconds: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
+    group_stop_vote_count: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    group_stop_vote_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -140,6 +145,14 @@ class GroupQuizSession(Base):
     current_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_questions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     question_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    start_vote_required: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    start_vote_seconds: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
+    start_vote_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_vote_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    stop_vote_required: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    stop_vote_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    stop_vote_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stop_vote_message_id: Mapped[int | None] = mapped_column(BigInteger)
     started_by_tg_id: Mapped[int | None] = mapped_column(BigInteger)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -152,6 +165,7 @@ class GroupQuizSession(Base):
         order_by="GroupQuizQuestion.order_index",
     )
     answers: Mapped[list[GroupQuizAnswer]] = relationship(back_populates="session", cascade="all, delete-orphan")
+    votes: Mapped[list[GroupQuizVote]] = relationship(back_populates="session", cascade="all, delete-orphan")
 
 
 class GroupQuizQuestion(Base):
@@ -191,6 +205,22 @@ class GroupQuizAnswer(Base):
     quiz_question: Mapped[GroupQuizQuestion] = relationship(back_populates="answers")
 
     __table_args__ = (UniqueConstraint("session_id", "quiz_question_id", "user_tg_id", name="uq_group_quiz_user_answer"),)
+
+
+class GroupQuizVote(Base):
+    __tablename__ = "group_quiz_votes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("group_quiz_sessions.id", ondelete="CASCADE"), index=True, nullable=False)
+    vote_type: Mapped[str] = mapped_column(String(12), index=True, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(64))
+    full_name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    session: Mapped[GroupQuizSession] = relationship(back_populates="votes")
+
+    __table_args__ = (UniqueConstraint("session_id", "vote_type", "user_tg_id", name="uq_group_quiz_vote"),)
 
 
 class Attempt(Base):

@@ -5,7 +5,7 @@ import html
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -22,6 +22,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    LinkPreviewOptions,
     MenuButtonWebApp,
     Message,
     PollAnswer,
@@ -30,19 +31,21 @@ from aiogram.types import (
     Update,
     WebAppInfo,
 )
-from sqlalchemy import select
+from sqlalchemy import delete, exists, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .config import get_settings
 from .database import SessionLocal
 from .models import (
     Broadcast,
+    Answer,
     ErrorReport,
     GroupQuizAnswer,
     GroupQuizQuestion,
     GroupQuizSession,
+    GroupQuizVote,
     Question,
-    Source,
     TelegramGroup,
     Test,
     TestRule,
@@ -56,13 +59,14 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 TASHKENT = ZoneInfo("Asia/Tashkent")
 GROUP_CHAT_TYPES = {"group", "supergroup"}
-GROUP_QUIZ_QUESTION_SECONDS = 30
 GROUP_QUIZ_MAX_TESTS = 25
+GROUP_QUIZ_LIVE_STATUSES = ("pending_start", "starting", "active", "stopping")
 TELEGRAM_ALLOWED_UPDATES = ["message", "callback_query", "poll_answer", "my_chat_member"]
 
 bot: Bot | None = None
 dp: Dispatcher | None = None
 router = Router()
+resolved_bot_username = settings.bot_username.lstrip("@").casefold()
 
 
 class Registration(StatesGroup):
@@ -92,6 +96,26 @@ def plain_text(value: str | None) -> str:
 def button_is(*labels: str):  # noqa: ANN201
     normalized = {plain_text(label) for label in labels}
     return F.text.func(lambda value: plain_text(value) in normalized)
+
+
+def addressed_group_command_is(*commands: str):  # noqa: ANN201
+    expected = {command.casefold() for command in commands}
+
+    def matches(value: str | None) -> bool:
+        if not value or not resolved_bot_username:
+            return False
+        match = re.fullmatch(r"/([a-z0-9_]+)@([a-z0-9_]+)(?:\s+.*)?", value.strip(), flags=re.IGNORECASE)
+        return bool(match and match.group(1).casefold() in expected and match.group(2).casefold() == resolved_bot_username)
+
+    return F.text.func(matches)
+
+
+def normalized_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def webapp_entry_url() -> str:
@@ -200,6 +224,38 @@ def group_quiz_test_keyboard(tests: list[Test]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def group_vote_keyboard(session_id: int, vote_type: str, count: int, required: int) -> InlineKeyboardMarkup:
+    label = "🚀 Boshlash uchun ovoz" if vote_type == "start" else "🛑 To'xtatish uchun ovoz"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{label} · {count}/{required}", callback_data=f"gquiz:vote_{vote_type}:{session_id}")]
+        ]
+    )
+
+
+def live_group_quiz_session(db, chat_id: int) -> GroupQuizSession | None:  # noqa: ANN001
+    return db.scalar(
+        select(GroupQuizSession)
+        .where(GroupQuizSession.chat_id == chat_id, GroupQuizSession.status.in_(GROUP_QUIZ_LIVE_STATUSES))
+        .order_by(GroupQuizSession.id.desc())
+        .limit(1)
+    )
+
+
+def format_vote_window(seconds: int) -> str:
+    if seconds % 60 == 0:
+        return f"{seconds // 60} daqiqa"
+    return f"{seconds} soniya"
+
+
+def profile_link(user_id: int, username: str | None, full_name: str | None) -> str:
+    display_name = limit_poll_text(full_name or (f"@{username}" if username else str(user_id)), 48)
+    label = html.escape(display_name)
+    if username and re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        return f'<a href="https://t.me/{username}">{label}</a>'
+    return f'<a href="tg://user?id={user_id}">{label}</a>'
+
+
 def make_group_quiz_snapshot(question: Question) -> tuple[list[dict[str, object]], int]:
     answers = [
         {"id": answer.id, "text": limit_poll_text(answer.answer_text, 100), "correct": answer.is_correct}
@@ -221,17 +277,13 @@ def make_group_quiz_snapshot(question: Question) -> tuple[list[dict[str, object]
 def load_group_quiz_test(db, test_id: int) -> Test | None:  # noqa: ANN001
     return db.scalar(
         select(Test)
-        .options(
-            selectinload(Test.rules)
-            .selectinload(TestRule.source)
-            .selectinload(Source.questions)
-            .selectinload(Question.answers)
-        )
+        .options(selectinload(Test.rules))
         .where(Test.id == test_id, Test.is_active.is_(True), Test.test_mode == "exam")
     )
 
 
 async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
+    should_finish = False
     with SessionLocal() as db:
         session = db.scalar(
             select(GroupQuizSession)
@@ -242,19 +294,24 @@ async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
             return
         question = next((item for item in session.questions if item.order_index == session.current_index + 1), None)
         if not question:
-            session.status = "finished"
+            session.status = "stopping"
             session.finished_at = utcnow()
             db.commit()
-            await send_group_quiz_results(bot_obj, session_id)
-            return
-        chat_id = session.chat_id
-        seconds = session.question_seconds
-        title = session.test_name_snapshot
-        order_index = question.order_index
-        total = session.total_questions
-        question_text = question.question_text_snapshot
-        options = [str(answer["text"]) for answer in question.answers_snapshot]
-        correct_option_id = question.correct_option_id
+            should_finish = True
+        else:
+            question_id = question.id
+            chat_id = session.chat_id
+            seconds = session.question_seconds
+            title = session.test_name_snapshot
+            order_index = question.order_index
+            total = session.total_questions
+            question_text = question.question_text_snapshot
+            options = [str(answer["text"]) for answer in question.answers_snapshot]
+            correct_option_id = question.correct_option_id
+
+    if should_finish:
+        await send_group_quiz_results(bot_obj, session_id)
+        return
 
     try:
         poll_message = await bot_obj.send_poll(
@@ -269,16 +326,152 @@ async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("Guruh quiz savoli yuborilmadi")
+        asyncio.create_task(advance_group_quiz_later(bot_obj, session_id, 1))
         return
 
     with SessionLocal() as db:
-        question_row = db.scalar(select(GroupQuizQuestion).where(GroupQuizQuestion.id == question.id))
+        question_row = db.scalar(select(GroupQuizQuestion).where(GroupQuizQuestion.id == question_id))
         if question_row:
             question_row.poll_id = poll_message.poll.id if poll_message.poll else None
             question_row.message_id = poll_message.message_id
             question_row.sent_at = utcnow()
             db.commit()
     asyncio.create_task(advance_group_quiz_later(bot_obj, session_id, seconds))
+
+
+async def prepare_group_quiz_session(bot_obj: Bot, session_id: int) -> bool:
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id).with_for_update())
+        if not session or session.status != "starting":
+            return False
+        test = load_group_quiz_test(db, session.test_id or 0)
+        if not test:
+            chat_id = session.chat_id
+            db.delete(session)
+            db.commit()
+            await bot_obj.send_message(chat_id, "Test topilmadi yoki endi faol emas.")
+            return False
+
+        selected_questions: list[Question] = []
+        for rule in test.rules:
+            has_correct = exists(
+                select(Answer.id).where(Answer.question_id == Question.id, Answer.is_correct.is_(True))
+            )
+            has_incorrect = exists(
+                select(Answer.id).where(Answer.question_id == Question.id, Answer.is_correct.is_(False))
+            )
+            questions = list(
+                db.scalars(
+                    select(Question)
+                    .options(selectinload(Question.answers))
+                    .where(Question.source_id == rule.source_id, has_correct, has_incorrect)
+                    .order_by(func.random())
+                    .limit(rule.question_count)
+                ).unique()
+            )
+            selected_questions.extend(questions)
+        random.shuffle(selected_questions)
+
+        valid_count = 0
+        for question in selected_questions:
+            try:
+                snapshot, correct_option_id = make_group_quiz_snapshot(question)
+            except ValueError:
+                continue
+            valid_count += 1
+            db.add(
+                GroupQuizQuestion(
+                    session_id=session.id,
+                    question_id=question.id,
+                    order_index=valid_count,
+                    question_text_snapshot=question.question_text,
+                    answers_snapshot=snapshot,
+                    correct_option_id=correct_option_id,
+                )
+            )
+
+        if valid_count == 0:
+            chat_id = session.chat_id
+            db.delete(session)
+            db.commit()
+            await bot_obj.send_message(chat_id, "Telegram quiz uchun yaroqli savol topilmadi.")
+            return False
+
+        session.total_questions = valid_count
+        session.current_index = 0
+        session.status = "active"
+        session.started_at = utcnow()
+        session.start_vote_deadline = None
+        session.start_vote_message_id = None
+        db.commit()
+        chat_id = session.chat_id
+        title = session.test_name_snapshot
+        seconds = session.question_seconds
+
+    await bot_obj.send_message(
+        chat_id,
+        "🚀 <b>QUIZ BOSHLANDI!</b>\n\n"
+        f"📘 <b>{html.escape(title)}</b>\n"
+        f"📝 Savollar: <b>{valid_count} ta</b>\n"
+        f"⏱ Har savol: <b>{seconds} soniya</b>\n\n"
+        "Javoblar shaxsiy hisoblanadi. Yakunda tezlik va to'g'ri javoblar bo'yicha reyting chiqadi. 🏆",
+    )
+    await send_group_quiz_question(bot_obj, session_id)
+    return True
+
+
+async def expire_start_vote(bot_obj: Bot, session_id: int, seconds: int) -> None:
+    await asyncio.sleep(seconds + 1)
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id).with_for_update())
+        if not session or session.status != "pending_start":
+            return
+        deadline = normalized_utc(session.start_vote_deadline)
+        if deadline and deadline > utcnow():
+            return
+        chat_id = session.chat_id
+        message_id = session.start_vote_message_id
+        required = session.start_vote_required
+        count = db.scalar(select(func.count(GroupQuizVote.id)).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "start")) or 0
+        db.delete(session)
+        db.commit()
+    if message_id:
+        try:
+            await bot_obj.edit_message_text(
+                f"⌛ <b>Quiz boshlanmadi</b>\n\nKerakli {required} ta ovozdan {count} tasi yig'ildi. Keyingi /quiz@{resolved_bot_username} buyrug'ini kutaman.",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Boshlash ovozi yakun xabari yangilanmadi")
+
+
+async def expire_stop_vote(bot_obj: Bot, session_id: int, seconds: int) -> None:
+    await asyncio.sleep(seconds + 1)
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id).with_for_update())
+        if not session or session.status != "active":
+            return
+        deadline = normalized_utc(session.stop_vote_deadline)
+        if not deadline or deadline > utcnow():
+            return
+        chat_id = session.chat_id
+        message_id = session.stop_vote_message_id
+        required = session.stop_vote_required
+        count = db.scalar(select(func.count(GroupQuizVote.id)).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "stop")) or 0
+        db.execute(delete(GroupQuizVote).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "stop"))
+        session.stop_vote_deadline = None
+        session.stop_vote_message_id = None
+        db.commit()
+    if message_id:
+        try:
+            await bot_obj.edit_message_text(
+                f"▶️ <b>Quiz davom etadi</b>\n\nTo'xtatish uchun kerakli {required} ta ovozdan {count} tasi yig'ildi.",
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("To'xtatish ovozi yakun xabari yangilanmadi")
 
 
 async def advance_group_quiz_later(bot_obj: Bot, session_id: int, seconds: int) -> None:
@@ -289,7 +482,7 @@ async def advance_group_quiz_later(bot_obj: Bot, session_id: int, seconds: int) 
             return
         next_index = session.current_index + 1
         if next_index >= session.total_questions:
-            session.status = "finished"
+            session.status = "stopping"
             session.finished_at = utcnow()
             db.commit()
             await send_group_quiz_results(bot_obj, session_id)
@@ -299,39 +492,109 @@ async def advance_group_quiz_later(bot_obj: Bot, session_id: int, seconds: int) 
     await send_group_quiz_question(bot_obj, session_id)
 
 
-async def send_group_quiz_results(bot_obj: Bot, session_id: int) -> None:
+async def send_group_quiz_results(bot_obj: Bot, session_id: int, stopped_early: bool = False) -> None:
     with SessionLocal() as db:
         session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id))
         if not session:
             return
-        answers = list(db.scalars(select(GroupQuizAnswer).where(GroupQuizAnswer.session_id == session_id)))
+        last_poll = db.scalar(
+            select(GroupQuizQuestion)
+            .where(GroupQuizQuestion.session_id == session_id, GroupQuizQuestion.message_id.is_not(None))
+            .order_by(GroupQuizQuestion.order_index.desc())
+            .limit(1)
+        )
+        answer_rows = db.execute(
+            select(GroupQuizAnswer, GroupQuizQuestion.sent_at)
+            .join(GroupQuizQuestion, GroupQuizQuestion.id == GroupQuizAnswer.quiz_question_id)
+            .where(GroupQuizAnswer.session_id == session_id)
+        ).all()
         scores: dict[int, dict[str, object]] = {}
-        for answer in answers:
+        for answer, sent_at in answer_rows:
             item = scores.setdefault(
                 answer.user_tg_id,
-                {"name": answer.full_name or answer.username or str(answer.user_tg_id), "correct": 0, "answered": 0},
+                {
+                    "user_id": answer.user_tg_id,
+                    "username": answer.username,
+                    "name": answer.full_name,
+                    "correct": 0,
+                    "answered": 0,
+                    "seconds": 0,
+                },
             )
             item["answered"] = int(item["answered"]) + 1
             if answer.is_correct:
                 item["correct"] = int(item["correct"]) + 1
-        leaderboard = sorted(scores.values(), key=lambda row: (int(row["correct"]), int(row["answered"])), reverse=True)
+            sent = normalized_utc(sent_at)
+            answered = normalized_utc(answer.answered_at)
+            if sent and answered:
+                item["seconds"] = int(item["seconds"]) + max(0, int((answered - sent).total_seconds()))
+        leaderboard = sorted(
+            scores.values(),
+            key=lambda row: (-int(row["correct"]), int(row["seconds"]), -int(row["answered"]), str(row["name"] or "")),
+        )
         chat_id = session.chat_id
         title = session.test_name_snapshot
-        total = session.total_questions
-    if not leaderboard:
-        await bot_obj.send_message(chat_id, f"<b>{html.escape(title)}</b> yakunlandi.\n\nHech kim javob bermadi.")
-        return
-    lines = [
-        f"<b>{html.escape(title)}</b> yakunlandi.",
-        "",
-        "<b>Natijalar:</b>",
-    ]
-    for index, row in enumerate(leaderboard[:20], start=1):
-        percent = round(int(row["correct"]) * 100 / total) if total else 0
-        lines.append(f"{index}. {html.escape(str(row['name']))} - {row['correct']}/{total} ({percent}%)")
-    if len(leaderboard) > 20:
-        lines.append(f"... yana {len(leaderboard) - 20} ta ishtirokchi")
-    await bot_obj.send_message(chat_id, "\n".join(lines))
+        stop_vote_message_id = session.stop_vote_message_id
+        presented = db.scalar(
+            select(func.count(GroupQuizQuestion.id)).where(
+                GroupQuizQuestion.session_id == session_id,
+                GroupQuizQuestion.sent_at.is_not(None),
+            )
+        ) or 0
+        last_poll_message_id = last_poll.message_id if last_poll else None
+
+    if stop_vote_message_id:
+        try:
+            await bot_obj.edit_message_text(
+                "🛑 <b>Quiz to'xtatildi.</b> Natijalar hisoblandi." if stopped_early else "✅ <b>Quiz tabiiy yakunlandi.</b>",
+                chat_id=chat_id,
+                message_id=stop_vote_message_id,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if last_poll_message_id:
+        try:
+            await bot_obj.stop_poll(chat_id, last_poll_message_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        if not leaderboard:
+            await bot_obj.send_message(chat_id, f"🏁 <b>{html.escape(title)}</b> yakunlandi.\n\nHech kim javob bermadi.")
+        else:
+            lines = [
+                "🏁✨ <b>QUIZ YAKUNLANDI!</b> ✨🏁",
+                f"📘 <b>{html.escape(title)}</b>",
+                "🛑 Test ovoz bilan to'xtatildi." if stopped_early else "✅ Barcha savollar yakunlandi.",
+                "",
+                "🏆 <b>YAKUNIY LEADERBOARD</b> 🏆",
+                "",
+            ]
+            medals = ["🥇", "🥈", "🥉"]
+            for index, row in enumerate(leaderboard[:25], start=1):
+                medal = medals[index - 1] if index <= 3 else f"{index}."
+                seconds_total = int(row["seconds"])
+                time_text = f"{seconds_total // 60:02d}:{seconds_total % 60:02d}"
+                username = row["username"] if isinstance(row["username"], str) else None
+                full_name = row["name"] if isinstance(row["name"], str) else None
+                person = profile_link(int(row["user_id"]), username, full_name)
+                lines.append(
+                    f"{medal} {person}\n"
+                    f"   ✅ <b>{row['correct']}/{presented}</b>  ·  ⏱ <b>{time_text}</b>  ·  📝 {row['answered']} ta"
+                )
+            if len(leaderboard) > 25:
+                lines.append(f"\n👥 Yana {len(leaderboard) - 25} ta ishtirokchi")
+            lines.extend(["", "⚡ Reyting: avval to'g'ri javoblar, keyin tezlik bo'yicha."])
+            await bot_obj.send_message(
+                chat_id,
+                "\n".join(lines),
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+    finally:
+        with SessionLocal() as db:
+            db.execute(delete(GroupQuizSession).where(GroupQuizSession.id == session_id))
+            db.commit()
 
 
 async def publish_bot_commands(bot_obj: Bot) -> None:
@@ -341,7 +604,7 @@ async def publish_bot_commands(bot_obj: Bot) -> None:
                 BotCommand(command="start", description="Botni boshlash"),
                 BotCommand(command="quiz", description="Guruhda test boshlash"),
                 BotCommand(command="group_id", description="Guruh ID raqamini ko'rsatish"),
-                BotCommand(command="quiz_cancel", description="Guruh quizini bekor qilish"),
+                BotCommand(command="quiz_stop", description="Guruh quizini to'xtatish"),
                 BotCommand(command="help", description="Yordam"),
             ]
         )
@@ -381,8 +644,9 @@ async def bot_group_membership(event: ChatMemberUpdated) -> None:
             await event.bot.send_message(
                 event.chat.id,
                 "Bot guruh quiz uchun ulandi.\n"
-                "Test boshlash: /quiz\n"
-                "Guruh ID: /group_id",
+                f"Test boshlash: /quiz@{resolved_bot_username}\n"
+                f"Testni to'xtatish: /quiz_stop@{resolved_bot_username}\n"
+                f"Guruh ID: /group_id@{resolved_bot_username}",
             )
         else:
             await event.bot.send_message(
@@ -710,7 +974,7 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext) -> None:
         await progress.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetib bormadi: {failed} ta")
 
 
-@router.message(Command("quiz", "testlar", "guruh_test"))
+@router.message(addressed_group_command_is("quiz", "testlar", "guruh_test"))
 async def group_quiz_menu(message: Message) -> None:
     if not is_group_chat(message):
         await message.answer("Bu buyruq faqat Telegram guruhlarida ishlaydi.")
@@ -722,36 +986,56 @@ async def group_quiz_menu(message: Message) -> None:
             f"Admin paneldagi <b>Guruhlar</b> bo'limiga shu ID ni qo'shing:\n<code>{message.chat.id}</code>"
         )
         return
-    if not await user_can_manage_group_quiz(message, message.from_user.id if message.from_user else None):
-        await message.answer("Quizni faqat guruh admini yoki bot admini boshlashi mumkin.")
-        return
+    admin_requested = await user_can_manage_group_quiz(message, message.from_user.id if message.from_user else None)
+    force_start_session_id: int | None = None
+    force_vote_message_id: int | None = None
     with SessionLocal() as db:
         active_session = db.scalar(
-            select(GroupQuizSession).where(GroupQuizSession.chat_id == message.chat.id, GroupQuizSession.status == "active")
+            select(GroupQuizSession)
+            .where(GroupQuizSession.chat_id == message.chat.id, GroupQuizSession.status.in_(GROUP_QUIZ_LIVE_STATUSES))
+            .order_by(GroupQuizSession.id.desc())
+            .with_for_update()
+            .limit(1)
         )
         if active_session:
-            await message.answer("Bu guruhda hozir boshqa quiz davom etmoqda. Tugashini kuting.")
-            return
-        tests = list(
-            db.scalars(
-                select(Test)
-                .options(selectinload(Test.rules))
-                .where(Test.is_active.is_(True), Test.test_mode == "exam")
-                .order_by(Test.created_at.desc())
+            if active_session.status == "pending_start" and admin_requested:
+                active_session.status = "starting"
+                force_start_session_id = active_session.id
+                force_vote_message_id = active_session.start_vote_message_id
+                db.commit()
+            else:
+                status_text = "boshlash uchun ovoz kutilmoqda" if active_session.status == "pending_start" else "quiz davom etmoqda"
+                await message.answer(f"Bu guruhda hozir {status_text}. Bir vaqtda faqat bitta test ishlaydi.")
+                return
+        if force_start_session_id is None:
+            tests = list(
+                db.scalars(
+                    select(Test)
+                    .options(selectinload(Test.rules))
+                    .where(Test.is_active.is_(True), Test.test_mode == "exam")
+                    .order_by(Test.created_at.desc())
+                )
             )
-        )
+    if force_start_session_id is not None:
+        if force_vote_message_id:
+            try:
+                await message.bot.edit_message_text(
+                    "👑 <b>Guruh admini testni darhol boshladi.</b>\n\nOvoz kutish bekor qilindi.",
+                    chat_id=message.chat.id,
+                    message_id=force_vote_message_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        await message.answer("👑 Guruh admini ovoz kutayotgan testni darhol boshladi.")
+        await prepare_group_quiz_session(message.bot, force_start_session_id)
+        return
     if not tests:
         await message.answer("Hozircha aktiv oddiy test mavjud emas.")
         return
     await message.answer("Guruhda o'tkaziladigan testni tanlang:", reply_markup=group_quiz_test_keyboard(tests))
 
 
-@router.message(F.text.regexp(r"^/(quiz|testlar|guruh_test)(@\w+)?($|\s)"))
-async def group_quiz_menu_fallback(message: Message) -> None:
-    await group_quiz_menu(message)
-
-
-@router.message(Command("group_id", "id"))
+@router.message(addressed_group_command_is("group_id", "id"))
 async def group_id_command(message: Message) -> None:
     if not is_group_chat(message):
         await message.answer("Bu komanda guruh ID sini olish uchun guruh ichida ishlatiladi.")
@@ -760,11 +1044,6 @@ async def group_id_command(message: Message) -> None:
         f"<b>Guruh ID:</b> <code>{message.chat.id}</code>\n"
         "Admin paneldagi <b>Guruhlar</b> bo'limiga aynan shu ID ni kiriting."
     )
-
-
-@router.message(F.text.regexp(r"^/(group_id|id)(@\w+)?($|\s)"))
-async def group_id_command_fallback(message: Message) -> None:
-    await group_id_command(message)
 
 
 @router.callback_query(F.data.startswith("gquiz:start:"))
@@ -776,9 +1055,7 @@ async def group_quiz_start(callback: CallbackQuery) -> None:
     if not group:
         await callback.answer("Bu guruhga ruxsat berilmagan", show_alert=True)
         return
-    if not await user_can_manage_group_quiz(callback.message, callback.from_user.id):
-        await callback.answer("Faqat guruh admini boshlashi mumkin", show_alert=True)
-        return
+    starts_immediately = await user_can_manage_group_quiz(callback.message, callback.from_user.id)
     try:
         test_id = int(callback.data.rsplit(":", 1)[1])
     except (TypeError, ValueError):
@@ -786,99 +1063,248 @@ async def group_quiz_start(callback: CallbackQuery) -> None:
         return
 
     with SessionLocal() as db:
-        active_session = db.scalar(
-            select(GroupQuizSession).where(GroupQuizSession.chat_id == callback.message.chat.id, GroupQuizSession.status == "active")
-        )
+        db.scalar(select(TelegramGroup).where(TelegramGroup.id == group.id).with_for_update())
+        active_session = live_group_quiz_session(db, callback.message.chat.id)
         if active_session:
-            await callback.answer("Bu guruhda quiz davom etmoqda", show_alert=True)
+            await callback.answer("Bu guruhda boshqa test jarayoni bor", show_alert=True)
             return
         test = load_group_quiz_test(db, test_id)
         if not test:
             await callback.answer("Test topilmadi yoki aktiv emas", show_alert=True)
             return
-        selected_questions: list[Question] = []
-        for rule in test.rules:
-            questions = [
-                question
-                for question in rule.source.questions
-                if len(question.answers) >= 2
-                and any(answer.is_correct for answer in question.answers)
-                and any(not answer.is_correct for answer in question.answers)
-            ]
-            if questions:
-                selected_questions.extend(random.sample(questions, min(rule.question_count, len(questions))))
-        if not selected_questions:
-            await callback.answer("Bu testda quiz uchun yaroqli savol yo'q", show_alert=True)
-            return
-        random.shuffle(selected_questions)
+        status = "starting" if starts_immediately else "pending_start"
+        deadline = None if starts_immediately else utcnow() + timedelta(seconds=test.group_start_vote_seconds)
         session = GroupQuizSession(
             group_id=group.id,
             test_id=test.id,
             chat_id=callback.message.chat.id,
             test_name_snapshot=test.name,
-            total_questions=len(selected_questions),
-            question_seconds=GROUP_QUIZ_QUESTION_SECONDS,
+            status=status,
+            question_seconds=test.group_question_seconds,
+            start_vote_required=test.group_start_vote_count,
+            start_vote_seconds=test.group_start_vote_seconds,
+            start_vote_deadline=deadline,
+            stop_vote_required=test.group_stop_vote_count,
+            stop_vote_seconds=test.group_stop_vote_seconds,
             started_by_tg_id=callback.from_user.id,
         )
         db.add(session)
         db.flush()
-        skipped = 0
-        for index, question in enumerate(selected_questions, start=1):
-            try:
-                snapshot, correct_option_id = make_group_quiz_snapshot(question)
-            except ValueError:
-                skipped += 1
-                continue
-            db.add(
-                GroupQuizQuestion(
-                    session_id=session.id,
-                    question_id=question.id,
-                    order_index=index - skipped,
-                    question_text_snapshot=question.question_text,
-                    answers_snapshot=snapshot,
-                    correct_option_id=correct_option_id,
-                )
-            )
-        session.total_questions = len(selected_questions) - skipped
-        if session.total_questions <= 0:
-            db.rollback()
-            await callback.answer("Telegram quiz uchun yaroqli savol topilmadi", show_alert=True)
-            return
         db.commit()
         session_id = session.id
         title = test.name
-        total = session.total_questions
+        required = session.start_vote_required
+        vote_seconds = session.start_vote_seconds
 
-    await callback.answer("Quiz boshlandi")
+    await callback.answer("Test tanlandi")
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001
         pass
-    await callback.message.answer(
-        f"<b>{html.escape(title)}</b> guruh quiz boshlandi.\n"
-        f"Savollar: {total} ta\n"
-        f"Har savol uchun: {GROUP_QUIZ_QUESTION_SECONDS} soniya\n\n"
-        "Javoblar shaxsiy hisoblanadi, yakunda natija guruhga chiqadi."
+    if starts_immediately:
+        await callback.message.answer("👑 Guruh admini testni darhol boshladi.")
+        await prepare_group_quiz_session(callback.bot, session_id)
+        return
+
+    vote_message = await callback.message.answer(
+        "🗳 <b>QUIZNI BOSHLASH UCHUN OVOZ BERING!</b>\n\n"
+        f"📘 Test: <b>{html.escape(title)}</b>\n"
+        f"👥 Kerakli ovoz: <b>{required} ta</b>\n"
+        f"⏳ Vaqt: <b>{format_vote_window(vote_seconds)}</b>\n\n"
+        "Yetarli ovoz yig'ilsa test avtomatik boshlanadi.",
+        reply_markup=group_vote_keyboard(session_id, "start", 0, required),
     )
-    await send_group_quiz_question(callback.bot, session_id)
+    with SessionLocal() as db:
+        pending = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id, GroupQuizSession.status == "pending_start"))
+        if pending:
+            pending.start_vote_message_id = vote_message.message_id
+            db.commit()
+    asyncio.create_task(expire_start_vote(callback.bot, session_id, vote_seconds))
 
 
-@router.message(Command("quiz_cancel"))
-async def group_quiz_cancel(message: Message) -> None:
+@router.callback_query(F.data.startswith("gquiz:vote_start:"))
+async def group_quiz_start_vote(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not is_group_chat(callback.message):
+        await callback.answer("Bu ovoz guruh uchun", show_alert=True)
+        return
+    try:
+        session_id = int(callback.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        await callback.answer("Ovoz ma'lumoti noto'g'ri", show_alert=True)
+        return
+    should_start = False
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id).with_for_update())
+        deadline = normalized_utc(session.start_vote_deadline) if session else None
+        if not session or session.chat_id != callback.message.chat.id or session.status != "pending_start" or not deadline or deadline <= utcnow():
+            await callback.answer("Ovoz berish vaqti tugagan", show_alert=True)
+            return
+        try:
+            db.add(
+                GroupQuizVote(
+                    session_id=session.id,
+                    vote_type="start",
+                    user_tg_id=callback.from_user.id,
+                    username=callback.from_user.username,
+                    full_name=callback.from_user.full_name,
+                )
+            )
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            await callback.answer("Siz avval ovoz bergansiz")
+            return
+        count = db.scalar(select(func.count(GroupQuizVote.id)).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "start")) or 0
+        required = session.start_vote_required
+        if count >= required:
+            session.status = "starting"
+            should_start = True
+        db.commit()
+    if should_start:
+        await callback.answer("Yetarli ovoz yig'ildi!")
+        try:
+            await callback.message.edit_text("✅ <b>Yetarli ovoz yig'ildi!</b>\n\nQuiz hozir boshlanadi... 🚀")
+        except Exception:  # noqa: BLE001
+            pass
+        await prepare_group_quiz_session(callback.bot, session_id)
+    else:
+        await callback.answer(f"Ovozingiz qabul qilindi: {count}/{required}")
+        try:
+            await callback.message.edit_reply_markup(reply_markup=group_vote_keyboard(session_id, "start", count, required))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@router.message(addressed_group_command_is("quiz_stop", "quiz_cancel", "stop_quiz"))
+async def group_quiz_stop(message: Message) -> None:
     if not is_group_chat(message):
         return
-    if not await user_can_manage_group_quiz(message, message.from_user.id if message.from_user else None):
-        await message.answer("Quizni faqat guruh admini yoki bot admini bekor qila oladi.")
+    if not active_group_or_none(message.chat.id, message.chat.title):
         return
+    stops_immediately = await user_can_manage_group_quiz(message, message.from_user.id if message.from_user else None)
     with SessionLocal() as db:
-        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.chat_id == message.chat.id, GroupQuizSession.status == "active"))
+        session = db.scalar(
+            select(GroupQuizSession)
+            .where(GroupQuizSession.chat_id == message.chat.id, GroupQuizSession.status.in_(GROUP_QUIZ_LIVE_STATUSES))
+            .order_by(GroupQuizSession.id.desc())
+            .with_for_update()
+            .limit(1)
+        )
         if not session:
             await message.answer("Bu guruhda aktiv quiz yo'q.")
             return
-        session.status = "cancelled"
-        session.finished_at = utcnow()
+        if session.status == "pending_start":
+            if not stops_immediately:
+                await message.answer("Quiz hali boshlanmagan; boshlash ovozi yakunlanishini kuting.")
+                return
+            vote_message_id = session.start_vote_message_id
+            db.delete(session)
+            db.commit()
+            if vote_message_id:
+                try:
+                    await message.bot.edit_message_text(
+                        "👑 <b>Admin boshlash ovozini bekor qildi.</b>",
+                        chat_id=message.chat.id,
+                        message_id=vote_message_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            await message.answer("👑 Admin boshlash ovozini bekor qildi.")
+            return
+        if session.status != "active":
+            await message.answer("Quiz hozir yakunlanmoqda.")
+            return
+        session_id = session.id
+        if stops_immediately:
+            session.status = "stopping"
+            session.finished_at = utcnow()
+            db.commit()
+        else:
+            current_deadline = normalized_utc(session.stop_vote_deadline)
+            if current_deadline and current_deadline > utcnow():
+                await message.answer("To'xtatish uchun ovoz berish allaqachon ochilgan. Yuqoridagi tugmani bosing.")
+                return
+            db.execute(delete(GroupQuizVote).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "stop"))
+            session.stop_vote_deadline = utcnow() + timedelta(seconds=session.stop_vote_seconds)
+            session.stop_vote_message_id = None
+            required = session.stop_vote_required
+            vote_seconds = session.stop_vote_seconds
+            title = session.test_name_snapshot
+            db.commit()
+
+    if stops_immediately:
+        await message.answer("👑 Guruh admini quizni darhol to'xtatdi.")
+        await send_group_quiz_results(message.bot, session_id, stopped_early=True)
+        return
+
+    vote_message = await message.answer(
+        "🛑 <b>QUIZNI TO'XTATISH UCHUN OVOZ</b>\n\n"
+        f"📘 Test: <b>{html.escape(title)}</b>\n"
+        f"👥 Kerakli ovoz: <b>{required} ta</b>\n"
+        f"⏳ Vaqt: <b>{format_vote_window(vote_seconds)}</b>\n\n"
+        "Yetarli ovoz yig'ilmasa quiz davom etadi.",
+        reply_markup=group_vote_keyboard(session_id, "stop", 0, required),
+    )
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id, GroupQuizSession.status == "active"))
+        if session:
+            session.stop_vote_message_id = vote_message.message_id
+            db.commit()
+    asyncio.create_task(expire_stop_vote(message.bot, session_id, vote_seconds))
+
+
+@router.callback_query(F.data.startswith("gquiz:vote_stop:"))
+async def group_quiz_stop_vote(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not is_group_chat(callback.message):
+        await callback.answer("Bu ovoz guruh uchun", show_alert=True)
+        return
+    try:
+        session_id = int(callback.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        await callback.answer("Ovoz ma'lumoti noto'g'ri", show_alert=True)
+        return
+    should_stop = False
+    with SessionLocal() as db:
+        session = db.scalar(select(GroupQuizSession).where(GroupQuizSession.id == session_id).with_for_update())
+        deadline = normalized_utc(session.stop_vote_deadline) if session else None
+        if not session or session.chat_id != callback.message.chat.id or session.status != "active" or not deadline or deadline <= utcnow():
+            await callback.answer("Ovoz berish vaqti tugagan", show_alert=True)
+            return
+        try:
+            db.add(
+                GroupQuizVote(
+                    session_id=session.id,
+                    vote_type="stop",
+                    user_tg_id=callback.from_user.id,
+                    username=callback.from_user.username,
+                    full_name=callback.from_user.full_name,
+                )
+            )
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            await callback.answer("Siz avval ovoz bergansiz")
+            return
+        count = db.scalar(select(func.count(GroupQuizVote.id)).where(GroupQuizVote.session_id == session.id, GroupQuizVote.vote_type == "stop")) or 0
+        required = session.stop_vote_required
+        if count >= required:
+            session.status = "stopping"
+            session.finished_at = utcnow()
+            should_stop = True
         db.commit()
-    await message.answer("Quiz bekor qilindi.")
+    if should_stop:
+        await callback.answer("Quiz to'xtatiladi")
+        try:
+            await callback.message.edit_text("🛑 <b>Yetarli ovoz yig'ildi.</b>\n\nQuiz to'xtatildi, natijalar hisoblanmoqda... 🏆")
+        except Exception:  # noqa: BLE001
+            pass
+        await send_group_quiz_results(callback.bot, session_id, stopped_early=True)
+    else:
+        await callback.answer(f"Ovozingiz qabul qilindi: {count}/{required}")
+        try:
+            await callback.message.edit_reply_markup(reply_markup=group_vote_keyboard(session_id, "stop", count, required))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.poll_answer()
@@ -936,11 +1362,23 @@ async def unknown_text(message: Message) -> None:
 
 
 async def setup_bot() -> None:
-    global bot, dp
+    global bot, dp, resolved_bot_username
     if not settings.bot_token:
         logger.warning("BOT_TOKEN mavjud emas, Telegram bot ishga tushmaydi")
         return
+    with SessionLocal() as db:
+        stale_count = db.scalar(select(func.count(GroupQuizSession.id))) or 0
+        if stale_count:
+            db.execute(delete(GroupQuizSession))
+            db.commit()
+            logger.info("%s ta eski guruh quiz jarayoni tozalandi", stale_count)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        identity = await bot.get_me()
+        if identity.username:
+            resolved_bot_username = identity.username.casefold()
+    except Exception:  # noqa: BLE001
+        logger.exception("Bot username aniqlanmadi, BOT_USERNAME qiymati ishlatiladi")
     if dp is None:
         dp = Dispatcher()
         dp.include_router(router)

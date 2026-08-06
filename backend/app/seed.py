@@ -43,9 +43,39 @@ def _run_lightweight_migrations() -> None:
 
     if "tests" in table_names:
         existing_tests = {column["name"] for column in inspector.get_columns("tests")}
-        if "test_mode" not in existing_tests:
-            with engine.begin() as connection:
-                connection.execute(text("ALTER TABLE tests ADD COLUMN test_mode VARCHAR(30) NOT NULL DEFAULT 'exam'"))
+        test_additions = {
+            "test_mode": "VARCHAR(30) NOT NULL DEFAULT 'exam'",
+            "group_question_seconds": "INTEGER NOT NULL DEFAULT 30",
+            "group_start_vote_count": "INTEGER NOT NULL DEFAULT 10",
+            "group_start_vote_seconds": "INTEGER NOT NULL DEFAULT 120",
+            "group_stop_vote_count": "INTEGER NOT NULL DEFAULT 10",
+            "group_stop_vote_seconds": "INTEGER NOT NULL DEFAULT 60",
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in test_additions.items():
+                if column_name not in existing_tests:
+                    connection.execute(text(f"ALTER TABLE tests ADD COLUMN {column_name} {column_type}"))
+
+    if "group_quiz_sessions" in table_names:
+        existing_sessions = {column["name"] for column in inspector.get_columns("group_quiz_sessions")}
+        timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME"
+        session_additions = {
+            "start_vote_required": "INTEGER NOT NULL DEFAULT 10",
+            "start_vote_seconds": "INTEGER NOT NULL DEFAULT 120",
+            "start_vote_deadline": timestamp_type,
+            "start_vote_message_id": "BIGINT",
+            "stop_vote_required": "INTEGER NOT NULL DEFAULT 10",
+            "stop_vote_seconds": "INTEGER NOT NULL DEFAULT 60",
+            "stop_vote_deadline": timestamp_type,
+            "stop_vote_message_id": "BIGINT",
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in session_additions.items():
+                if column_name not in existing_sessions:
+                    connection.execute(text(f"ALTER TABLE group_quiz_sessions ADD COLUMN {column_name} {column_type}"))
+
+            # Old completed process rows are not needed for statistics or future quizzes.
+            connection.execute(text("DELETE FROM group_quiz_sessions WHERE status IN ('finished', 'cancelled')"))
 
     if {"attempts", "attempt_questions", "tests", "test_attempt_stats"}.issubset(table_names):
         with engine.begin() as connection:
