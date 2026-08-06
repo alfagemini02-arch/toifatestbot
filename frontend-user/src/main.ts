@@ -1,5 +1,7 @@
 ﻿import './style.css';
 
+const logoUrl = '/app/bojxona-logo.png';
+
 declare global {
   interface Window {
     Telegram?: {
@@ -183,7 +185,7 @@ async function showHome(): Promise<void> {
       api<TestItem[]>('/api/tests'),
     ]);
     app.innerHTML = `<main class="page home-page">
-      <header class="welcome"><div><p class="eyebrow">Testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Kerakli testni tanlang, yakunda natijangizni ko'rasiz.</p></div><div class="avatar">${escapeHtml(me.full_name.charAt(0).toUpperCase())}</div></header>
+      <header class="welcome"><div><p class="eyebrow">Testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Kerakli testni tanlang, yakunda natijangizni ko'rasiz.</p></div><div class="avatar"><img src="${logoUrl}" alt="Davlat bojxona xizmati logosi"></div></header>
       <section><div class="section-title"><h2>Faol testlar</h2><span>${tests.length} ta</span></div><div class="test-grid">${tests.length ? tests.map(test => `
         <article class="test-card" data-test-id="${test.id}"><div class="test-icon">${test.test_mode === 'classifier' ? 'A' : 'T'}</div><div class="test-info"><h3>${escapeHtml(test.name)}</h3><p>${test.test_mode === 'classifier' ? 'Savollarni ajratish sinovi' : `${test.total_questions} ta savol`}${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ', vaqt cheklanmagan'}</p></div><button class="circle-button" aria-label="Boshlash">›</button></article>`).join('') : '<div class="empty">Hozircha faol test mavjud emas.</div>'}</div></section>
     </main>`;
@@ -246,7 +248,7 @@ function renderAttempt(): void {
   const isLocked = question.selected_answer_id !== null || question.checking_answer_id != null;
   const explanation = question.selected_answer_id !== null && question.explanation ? `<div class="answer-explanation"><strong>Tushuntirish</strong><p>${escapeHtml(question.explanation)}</p></div>` : '';
   app.innerHTML = `<main class="test-page">
-    <header class="test-header"><div><span class="eyebrow">Test</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
+    <header class="test-header"><div class="test-title"><img class="test-logo" src="${logoUrl}" alt=""><div><span class="eyebrow">Test</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
     <details class="question-picker"><summary><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><b>Savollar ro'yxati</b></summary><nav class="question-nav" id="question-nav">${currentAttempt.questions.map((item, index) => `<button class="q-dot ${index === currentIndex ? 'current' : ''} ${item.is_correct === true ? 'correct' : item.is_correct === false ? 'wrong' : ''}" data-index="${index}">${index + 1}</button>`).join('')}</nav></details>
     <section class="question-wrap"><div class="progress-line"><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><span>${answered} ta javob</span></div><article class="question-card"><h2>${escapeHtml(question.question_text)}</h2><div class="answers">${question.answers.map((answer, index) => {
       let cls = '';
@@ -279,7 +281,7 @@ function renderClassifierAttempt(): void {
   const appearedSelected = question.selected_answer_id === 1;
   const missedSelected = question.selected_answer_id === 0;
   app.innerHTML = `<main class="test-page classifier-page">
-    <header class="test-header"><div><span class="eyebrow">Ajratish sinovi</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
+    <header class="test-header"><div class="test-title"><img class="test-logo" src="${logoUrl}" alt=""><div><span class="eyebrow">Ajratish sinovi</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
     <details class="question-picker"><summary><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><b>Savollar ro'yxati</b></summary><nav class="question-nav" id="question-nav">${currentAttempt.questions.map((item, index) => `<button class="q-dot ${index === currentIndex ? 'current' : ''} ${item.is_correct === true ? 'correct' : item.selected_answer_id === 0 ? 'wrong' : ''}" data-index="${index}">${index + 1}</button>`).join('')}</nav></details>
     <section class="question-wrap"><div class="progress-line"><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><span>${answered} ta belgilandi</span></div><article class="question-card classifier-card"><h2>${escapeHtml(question.question_text)}</h2>${question.answers.length ? `<div class="readonly-answers">${question.answers.map((answer, index) => `<div><span>${String.fromCharCode(65 + index)}</span><b>${escapeHtml(answer.text)}</b></div>`).join('')}</div>` : ''}<div class="classifier-actions"><button class="appeared ${appearedSelected ? 'selected' : ''}" id="appeared" ${isLocked ? 'disabled' : ''}>Tushgan</button><button class="missed ${missedSelected ? 'selected' : ''}" id="missed" ${isLocked ? 'disabled' : ''}>Tushmagan</button></div>${question.checking_answer_id != null ? '<p class="classifier-note">Belgilanmoqda...</p>' : question.selected_answer_id !== null ? '<p class="classifier-note">Qaroringiz saqlandi</p>' : '<p class="classifier-note">Savol o‘tgan yili tushgan deb o‘ylasangiz “Tushgan”ni bosing.</p>'}</article><div class="pager"><button class="ghost" id="prev" ${currentIndex === 0 ? 'disabled' : ''}>Oldingi</button><button class="ghost" id="next" ${currentIndex === currentAttempt.questions.length - 1 ? 'disabled' : ''}>Keyingi</button></div><div class="finish-row"><button class="finish finish-inline" id="finish">Sinovni yakunlash</button></div></section>
   </main>`;
