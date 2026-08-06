@@ -18,6 +18,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BotCommand,
     CallbackQuery,
+    ChatMemberUpdated,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -57,6 +58,7 @@ TASHKENT = ZoneInfo("Asia/Tashkent")
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 GROUP_QUIZ_QUESTION_SECONDS = 30
 GROUP_QUIZ_MAX_TESTS = 25
+TELEGRAM_ALLOWED_UPDATES = ["message", "callback_query", "poll_answer", "my_chat_member"]
 
 bot: Bot | None = None
 dp: Dispatcher | None = None
@@ -364,6 +366,32 @@ async def help_command(message: Message) -> None:
         "/cancel — joriy amalni bekor qiladi.",
         reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id),
     )
+
+
+@router.my_chat_member()
+async def bot_group_membership(event: ChatMemberUpdated) -> None:
+    if event.chat.type not in GROUP_CHAT_TYPES:
+        return
+    status = event.new_chat_member.status
+    if status not in {"member", "administrator"}:
+        return
+    group = active_group_or_none(event.chat.id, event.chat.title)
+    try:
+        if group:
+            await event.bot.send_message(
+                event.chat.id,
+                "Bot guruh quiz uchun ulandi.\n"
+                "Test boshlash: /quiz\n"
+                "Guruh ID: /group_id",
+            )
+        else:
+            await event.bot.send_message(
+                event.chat.id,
+                "Bot guruhga qo'shildi, lekin bu guruhga hali ruxsat berilmagan.\n"
+                f"Admin paneldagi <b>Guruhlar</b> bo'limiga shu ID ni qo'shing:\n<code>{event.chat.id}</code>",
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Guruhga ulanish xabari yuborilmadi")
 
 
 @router.message(CommandStart())
@@ -918,7 +946,7 @@ async def setup_bot() -> None:
         await bot.set_webhook(
             webhook_url,
             secret_token=settings.webhook_secret,
-            allowed_updates=dp.resolve_used_update_types(),
+            allowed_updates=TELEGRAM_ALLOWED_UPDATES,
             drop_pending_updates=False,
         )
         logger.info("Telegram webhook o'rnatildi: %s", webhook_url)

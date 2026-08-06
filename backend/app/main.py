@@ -49,7 +49,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Telegram-Bot-Api-Secret-Token"],
 )
 trusted_hosts = settings.trusted_hosts or ["*"]
@@ -62,7 +62,7 @@ app.include_router(admin_router)
 
 @app.middleware("http")
 async def uptime_head_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
-    if request.method == "HEAD" and request.url.path in {"/", "/health", "/api/health"}:
+    if request.method == "HEAD":
         return Response(status_code=200)
     return await call_next(request)
 
@@ -102,14 +102,11 @@ async def telegram_webhook(
     return {"ok": True}
 
 
-@app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+def root(request: Request) -> RedirectResponse | Response:
+    if request.method == "HEAD":
+        return Response(status_code=200)
     return RedirectResponse(url="/app/")
-
-
-@app.head("/", include_in_schema=False)
-def root_head() -> Response:
-    return Response(status_code=200)
 
 
 static_root = Path("static")
