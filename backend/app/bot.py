@@ -16,6 +16,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -329,6 +330,21 @@ async def send_group_quiz_results(bot_obj: Bot, session_id: int) -> None:
     if len(leaderboard) > 20:
         lines.append(f"... yana {len(leaderboard) - 20} ta ishtirokchi")
     await bot_obj.send_message(chat_id, "\n".join(lines))
+
+
+async def publish_bot_commands(bot_obj: Bot) -> None:
+    try:
+        await bot_obj.set_my_commands(
+            [
+                BotCommand(command="start", description="Botni boshlash"),
+                BotCommand(command="quiz", description="Guruhda test boshlash"),
+                BotCommand(command="group_id", description="Guruh ID raqamini ko'rsatish"),
+                BotCommand(command="quiz_cancel", description="Guruh quizini bekor qilish"),
+                BotCommand(command="help", description="Yordam"),
+            ]
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Telegram bot komandalarini sozlab bo'lmadi")
 
 
 @router.message(Command("cancel"))
@@ -702,6 +718,22 @@ async def group_quiz_menu(message: Message) -> None:
     await message.answer("Guruhda o'tkaziladigan testni tanlang:", reply_markup=group_quiz_test_keyboard(tests))
 
 
+@router.message(F.text.regexp(r"^/(quiz|testlar|guruh_test)(@\w+)?($|\s)"))
+async def group_quiz_menu_fallback(message: Message) -> None:
+    await group_quiz_menu(message)
+
+
+@router.message(Command("group_id", "id"))
+async def group_id_command(message: Message) -> None:
+    if not is_group_chat(message):
+        await message.answer("Bu komanda guruh ID sini olish uchun guruh ichida ishlatiladi.")
+        return
+    await message.answer(
+        f"<b>Guruh ID:</b> <code>{message.chat.id}</code>\n"
+        "Admin paneldagi <b>Guruhlar</b> bo'limiga aynan shu ID ni kiriting."
+    )
+
+
 @router.callback_query(F.data.startswith("gquiz:start:"))
 async def group_quiz_start(callback: CallbackQuery) -> None:
     if not callback.message or not callback.from_user or not is_group_chat(callback.message):
@@ -879,6 +911,7 @@ async def setup_bot() -> None:
     if dp is None:
         dp = Dispatcher()
         dp.include_router(router)
+    await publish_bot_commands(bot)
 
     if settings.normalized_webapp_url.startswith("https://") and settings.webhook_secret:
         webhook_url = f"{settings.normalized_webapp_url}/api/telegram/webhook"

@@ -60,6 +60,13 @@ app.include_router(user_router)
 app.include_router(admin_router)
 
 
+@app.middleware("http")
+async def uptime_head_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
+    if request.method == "HEAD" and request.url.path in {"/", "/health", "/api/health"}:
+        return Response(status_code=200)
+    return await call_next(request)
+
+
 @app.get("/api/health")
 def health() -> dict:
     with SessionLocal() as db:
