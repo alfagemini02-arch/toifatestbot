@@ -13,6 +13,7 @@ type DuplicateGroup = { key: string; count: number; keep_id: number; items: Ques
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
 const toastElement = document.querySelector<HTMLDivElement>('#toast')!;
+const logoUrl = '/admin/bojxona-logo.png';
 let token = localStorage.getItem('admin_token') || '';
 let sourceCache: Source[] = [];
 let parsedImport: ParsedQuestion[] = [];
@@ -40,7 +41,7 @@ function loading(): void { document.querySelector<HTMLElement>('#content')!.inne
 function logout(): void { token = ''; localStorage.removeItem('admin_token'); location.hash = ''; showLogin(); }
 
 function showLogin(): void {
-  app.innerHTML = `<main class="login-page"><form class="login-card" id="login-form"><div class="brand-mark">T</div><h1>Admin panel</h1><p>Testlar va savollarni boshqarish</p><label>Login<input name="username" autocomplete="username" required autofocus></label><label>Parol<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Kirish</button><div class="form-error" id="login-error"></div></form></main>`;
+  app.innerHTML = `<main class="login-page"><form class="login-card" id="login-form"><div class="brand-mark"><img src="${logoUrl}" alt="Davlat bojxona xizmati logosi"></div><h1>Admin panel</h1><p>Testlar va savollarni boshqarish</p><label>Login<input name="username" autocomplete="username" required autofocus></label><label>Parol<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Kirish</button><div class="form-error" id="login-error"></div></form></main>`;
   document.querySelector<HTMLFormElement>('#login-form')!.addEventListener('submit', async (event) => {
     event.preventDefault(); const target = event.currentTarget as HTMLFormElement; const form = new FormData(target); const button = target.querySelector<HTMLButtonElement>('button')!;
     button.disabled = true;
@@ -53,7 +54,7 @@ function showLogin(): void {
 }
 
 function showShell(): void {
-  app.innerHTML = `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><div class="brand-mark small">T</div><div><strong>Test Bot</strong><span>Admin panel</span></div></div><nav>
+  app.innerHTML = `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><div class="brand-mark small"><img src="${logoUrl}" alt="Davlat bojxona xizmati logosi"></div><div><strong>Bojxona testlari</strong><span>Admin panel</span></div></div><nav>
     <a href="#dashboard" data-nav="dashboard">📊 <span>Bosh sahifa</span></a>
     <a href="#sources" data-nav="sources">📚 <span>Manbalar</span></a>
     <a href="#search" data-nav="search">🔍 <span>Qidiruv</span></a>
