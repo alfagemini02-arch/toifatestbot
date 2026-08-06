@@ -5,6 +5,7 @@ type Answer = { id?: number; text: string; correct: boolean; position?: number }
 type Question = { id: number; source_id: number; source_name: string; question_text: string; topic?: string | null; difficulty?: string; explanation?: string | null; answers: Answer[] };
 type TestRule = { source_id: number; source_name?: string; question_count: number; available_questions?: number };
 type TestItem = { id: number; name: string; test_mode: 'exam' | 'classifier'; time_limit_minutes: number; is_active: boolean; total_questions: number; attempt_count: number; rules: TestRule[] };
+type TelegramGroup = { id: number; chat_id: number; title: string | null; is_allowed: boolean; created_at: string; updated_at: string; last_seen_at: string | null };
 type ParsedQuestion = { question: string; answers: Answer[]; valid: boolean; problems: string[]; duplicate_in_file: boolean; duplicate_in_database: boolean; source_name?: string | null };
 type ErrorReport = { id: number; status: string; message_text: string | null; created_at: string; fixed_at: string | null; attempt_id: number | null; question_id: number | null; question_text: string | null; source_name: string | null; answers: Answer[]; question: Question | null; user: { full_name: string | null; telegram_id: number | null; phone: string | null; username: string | null } };
 type DuplicateGroup = { key: string; count: number; keep_id: number; items: Question[] };
@@ -57,6 +58,7 @@ function showShell(): void {
     <a href="#sources" data-nav="sources">📚 <span>Manbalar</span></a>
     <a href="#search" data-nav="search">🔍 <span>Qidiruv</span></a>
     <a href="#tests" data-nav="tests">📝 <span>Testlar</span></a>
+    <a href="#groups" data-nav="groups">👥 <span>Guruhlar</span></a>
     <a href="#reports" data-nav="reports">⚠️ <span>Xatoliklar</span></a>
     <a href="#import" data-nav="import">📥 <span>Import</span></a>
   </nav><button class="logout" id="logout">🚪 Chiqish</button></aside><div class="main"><header class="topbar"><button class="menu" id="menu">☰</button><div><strong id="page-title">Bosh sahifa</strong><span id="page-subtitle">Tizim holati</span></div><a class="open-app" href="/app/" target="_blank">Mini App ↗</a></header><section id="content" class="content"></section></div></div>`;
@@ -81,6 +83,7 @@ async function route(): Promise<void> {
     case 'sources': return showSources();
     case 'search': return showSearch();
     case 'tests': return showTests();
+    case 'groups': return showGroups();
     case 'reports': return showReports();
     case 'import': return showImport();
     default: return showDashboard();
@@ -270,6 +273,50 @@ async function showSearch(): Promise<void> {
   document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><h2>Barcha savollar bo‘yicha qidiruv</h2><span>Savol va javob matnidan qidiradi</span></div></div><div class="search-grid"><input id="global-q" placeholder="Qidiruv so‘zini kiriting…" autofocus><select id="global-source"><option value="">Barcha manbalar</option>${sourceCache.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div><div id="search-results" class="question-list"><div class="empty-block">Qidiruvni boshlang</div></div></section>`;
   const run = async () => { const q = document.querySelector<HTMLInputElement>('#global-q')!.value.trim(); const sid = document.querySelector<HTMLSelectElement>('#global-source')!.value; if (!q) return document.querySelector('#search-results')!.innerHTML = '<div class="empty-block">Qidiruvni boshlang</div>'; document.querySelector('#search-results')!.innerHTML = '<div class="loading small"><div class="spinner"></div></div>'; try { const data = await api<any>(`/api/admin/search?q=${encodeURIComponent(q)}${sid ? `&source_id=${sid}` : ''}`); document.querySelector('#search-results')!.innerHTML = data.items.map((item: Question) => questionCard(item)).join('') || '<div class="empty-block">Natija topilmadi</div>'; bindQuestionActions(run); } catch (e) { showError(e, '#search-results'); } };
   document.querySelector('#global-q')?.addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = window.setTimeout(run, 300); }); document.querySelector('#global-source')?.addEventListener('change', run);
+}
+
+async function showGroups(): Promise<void> {
+  setTitle('Guruhlar', 'Telegram guruh quiz ruxsatlari');
+  loading();
+  try {
+    const groups = await api<TelegramGroup[]>('/api/admin/telegram-groups');
+    document.querySelector('#content')!.innerHTML = `<section class="panel"><div class="panel-title"><div><h2>Telegram guruhlar</h2><span>${groups.length} ta guruh</span></div><button class="primary compact" id="new-group">+ Guruh qo‘shish</button></div><div class="empty-block compact-help"><strong>Guruh ID qanday olinadi?</strong><p>Botni guruhga qo‘shing, guruhda <code>/quiz</code> yozing. Bot ruxsat yo‘q desa, o‘sha xabardagi <code>chat_id</code> ni shu yerga kiriting.</p></div><div class="table-wrap"><table><thead><tr><th>Nomi</th><th>Chat ID</th><th>Ruxsat</th><th>Oxirgi ko‘rindi</th><th>Amallar</th></tr></thead><tbody>${groups.map(group => `<tr><td><strong>${esc(group.title || 'Nomsiz guruh')}</strong><small class="block">Qo‘shilgan: ${new Date(group.created_at).toLocaleString('uz-UZ')}</small></td><td><code>${group.chat_id}</code></td><td><span class="status ${group.is_allowed ? 'active' : 'inactive'}">${group.is_allowed ? 'Ruxsat bor' : 'Yopiq'}</span></td><td>${group.last_seen_at ? new Date(group.last_seen_at).toLocaleString('uz-UZ') : '—'}</td><td class="actions"><button data-edit-group="${group.id}">✏️</button><button class="danger-icon" data-delete-group="${group.id}">🗑</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty-cell">Hali guruh qo‘shilmagan</td></tr>'}</tbody></table></div></section>`;
+    document.querySelector('#new-group')?.addEventListener('click', () => groupModal());
+    document.querySelectorAll<HTMLElement>('[data-edit-group]').forEach(button => button.addEventListener('click', () => groupModal(groups.find(group => group.id === Number(button.dataset.editGroup)))));
+    document.querySelectorAll<HTMLElement>('[data-delete-group]').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm('Guruh ruxsatlar ro‘yxatidan o‘chirilsinmi?')) return;
+      try {
+        await api(`/api/admin/telegram-groups/${button.dataset.deleteGroup}`, { method: 'DELETE' });
+        toast('Guruh o‘chirildi');
+        showGroups();
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error), 'error');
+      }
+    }));
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function groupModal(group?: TelegramGroup): void {
+  openModal(`<form id="group-form"><h2>${group ? 'Guruhni tahrirlash' : 'Yangi guruh'}</h2><label>Guruh nomi<input name="title" value="${esc(group?.title || '')}" placeholder="Masalan: Bojxona tayyorgarlik guruhi"></label><label>Telegram group ID<input name="chat_id" type="number" value="${group?.chat_id || ''}" required placeholder="-1001234567890"></label><label class="switch-row"><input name="is_allowed" type="checkbox" ${group?.is_allowed !== false ? 'checked' : ''}> Guruhda test o‘tkazishga ruxsat berish</label><div class="form-error" id="group-error"></div><div class="modal-actions"><button type="button" class="ghost" data-close>Bekor qilish</button><button class="primary" type="submit">Saqlash</button></div></form>`);
+  document.querySelector<HTMLFormElement>('#group-form')!.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    const payload = {
+      title: String(form.get('title') || '').trim() || null,
+      chat_id: Number(form.get('chat_id')),
+      is_allowed: form.get('is_allowed') === 'on',
+    };
+    try {
+      await api(`/api/admin/telegram-groups${group ? `/${group.id}` : ''}`, { method: group ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      toast('Guruh saqlandi');
+      showGroups();
+    } catch (error) {
+      showFormError('#group-error', error);
+    }
+  });
 }
 
 async function showReports(status = 'open', page = 1): Promise<void> {
