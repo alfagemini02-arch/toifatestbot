@@ -112,7 +112,7 @@ def user_webapp_url(telegram_id: int | None = None) -> str:
 
 
 async def set_user_menu_button(message: Message) -> None:
-    if not message.from_user:
+    if not message.from_user or is_group_chat(message):
         return
     try:
         await message.bot.set_chat_menu_button(
@@ -349,14 +349,14 @@ async def publish_bot_commands(bot_obj: Bot) -> None:
         logger.exception("Telegram bot komandalarini sozlab bo'lmadi")
 
 
-@router.message(Command("cancel"))
+@router.message(Command("cancel"), F.chat.type == "private")
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await set_user_menu_button(message)
     await message.answer("Amal bekor qilindi.", reply_markup=main_menu(is_admin(message.from_user.id), message.from_user.id))
 
 
-@router.message(Command("help"))
+@router.message(Command("help"), F.chat.type == "private")
 async def help_command(message: Message) -> None:
     await set_user_menu_button(message)
     await message.answer(
@@ -394,7 +394,7 @@ async def bot_group_membership(event: ChatMemberUpdated) -> None:
         logger.exception("Guruhga ulanish xabari yuborilmadi")
 
 
-@router.message(CommandStart())
+@router.message(CommandStart(), F.chat.type == "private")
 async def start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
@@ -415,7 +415,7 @@ async def start(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(Registration.waiting_name, F.text)
+@router.message(Registration.waiting_name, F.text, F.chat.type == "private")
 async def registration_name(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if len(name) < 3:
@@ -429,7 +429,7 @@ async def registration_name(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(Registration.waiting_phone)
+@router.message(Registration.waiting_phone, F.chat.type == "private")
 async def registration_phone(message: Message, state: FSMContext) -> None:
     phone: str | None = None
     if message.contact:
@@ -462,7 +462,7 @@ async def registration_phone(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(button_is("Statistika"))
+@router.message(button_is("Statistika"), F.chat.type == "private")
 async def personal_stats(message: Message) -> None:
     await set_user_menu_button(message)
     with SessionLocal() as db:
@@ -477,7 +477,7 @@ async def personal_stats(message: Message) -> None:
         )
 
 
-@router.message(button_is("Xatolik haqida xabar"))
+@router.message(button_is("Xatolik haqida xabar"), F.chat.type == "private")
 async def report_begin(message: Message, state: FSMContext) -> None:
     await set_user_menu_button(message)
     user = get_user_by_tg(message.from_user.id)
@@ -493,7 +493,7 @@ async def report_begin(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(ReportState.waiting_report)
+@router.message(ReportState.waiting_report, F.chat.type == "private")
 async def report_receive(message: Message, state: FSMContext) -> None:
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.telegram_id == message.from_user.id))
@@ -578,7 +578,7 @@ async def already_fixed(callback: CallbackQuery) -> None:
     await callback.answer("Bu xatolik to'g'irlangan")
 
 
-@router.message(button_is("Admin bilan aloqa"))
+@router.message(button_is("Admin bilan aloqa"), F.chat.type == "private")
 async def contact_admin(message: Message) -> None:
     await set_user_menu_button(message)
     username = settings.admin_username.lstrip("@")
@@ -593,7 +593,7 @@ async def contact_admin(message: Message) -> None:
     )
 
 
-@router.message(button_is("Batafsil statistika"))
+@router.message(button_is("Batafsil statistika"), F.chat.type == "private")
 async def detailed_stats(message: Message) -> None:
     await set_user_menu_button(message)
     if not is_admin(message.from_user.id):
@@ -620,7 +620,7 @@ async def detailed_stats(message: Message) -> None:
     )
 
 
-@router.message(button_is("Barchaga xabar"))
+@router.message(button_is("Barchaga xabar"), F.chat.type == "private")
 async def broadcast_begin(message: Message, state: FSMContext) -> None:
     await set_user_menu_button(message)
     if not is_admin(message.from_user.id):
@@ -629,7 +629,7 @@ async def broadcast_begin(message: Message, state: FSMContext) -> None:
     await message.answer("📢 Yubormoqchi bo'lgan xabaringizni yuboring. Matn, rasm, video yoki fayl mumkin.\nBekor qilish: /cancel")
 
 
-@router.message(BroadcastState.waiting_message)
+@router.message(BroadcastState.waiting_message, F.chat.type == "private")
 async def broadcast_preview(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
         await state.clear()
@@ -760,6 +760,11 @@ async def group_id_command(message: Message) -> None:
         f"<b>Guruh ID:</b> <code>{message.chat.id}</code>\n"
         "Admin paneldagi <b>Guruhlar</b> bo'limiga aynan shu ID ni kiriting."
     )
+
+
+@router.message(F.text.regexp(r"^/(group_id|id)(@\w+)?($|\s)"))
+async def group_id_command_fallback(message: Message) -> None:
+    await group_id_command(message)
 
 
 @router.callback_query(F.data.startswith("gquiz:start:"))
