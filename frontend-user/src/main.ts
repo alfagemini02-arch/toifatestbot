@@ -40,6 +40,7 @@ type Attempt = {
   test_id: number;
   test_name: string;
   test_mode: 'exam' | 'classifier';
+  feedback_mode: 'practice' | 'exam';
   started_at: string;
   finished_at: string | null;
   total_questions: number;
@@ -53,7 +54,11 @@ type Result = {
   incorrect: number; unanswered: number; percentage: number; spent_seconds: number;
   test_mode?: 'exam' | 'classifier';
   topic_stats?: Array<{ topic: string; total: number; correct: number; percentage: number }>;
+  review?: ReviewItem[];
 };
+type ReviewItem = { order_index: number; question_text: string; answers: Answer[]; selected_answer_id: number | null; correct_answer_id: number | null; is_correct: boolean | null; explanation?: string | null };
+type UserSummary = { id?: number; full_name: string };
+type Preferences = { feedbackMode: 'practice' | 'exam'; questionCount: number; autoAdvanceSeconds: number };
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
@@ -65,6 +70,18 @@ let currentIndex = 0;
 let timerId: number | null = null;
 let autoAdvanceTimerId: number | null = null;
 let backHandler: (() => void) | null = null;
+let currentUser: UserSummary | null = null;
+let preferences: Preferences = loadPreferences();
+
+function loadPreferences(): Preferences {
+  try {
+    return { feedbackMode: 'practice', questionCount: 0, autoAdvanceSeconds: 3, ...JSON.parse(localStorage.getItem('test_preferences') || '{}') };
+  } catch {
+    return { feedbackMode: 'practice', questionCount: 0, autoAdvanceSeconds: 3 };
+  }
+}
+
+function savePreferences(): void { localStorage.setItem('test_preferences', JSON.stringify(preferences)); }
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]!));
@@ -124,13 +141,14 @@ async function waitForTelegramInitData(): Promise<string> {
 
 async function authenticate(): Promise<void> {
   if (token) {
-    try { await api('/api/me'); return; } catch { token = ''; sessionStorage.removeItem('user_token'); }
+    try { currentUser = await api<UserSummary>('/api/me'); return; } catch { token = ''; sessionStorage.removeItem('user_token'); }
   }
   const params = new URLSearchParams(location.search);
   const webappToken = params.get('tg_login') || '';
   const loginWithWebappToken = async (): Promise<void> => {
-    const result = await api<{ access_token: string }>('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ webapp_token: webappToken }) });
+    const result = await api<{ access_token: string; user: UserSummary }>('/api/auth/telegram', { method: 'POST', body: JSON.stringify({ webapp_token: webappToken }) });
     token = result.access_token; sessionStorage.setItem('user_token', token);
+    currentUser = result.user;
     history.replaceState(null, '', `${location.pathname}${location.hash}`);
   };
   const initData = await waitForTelegramInitData();
@@ -140,16 +158,17 @@ async function authenticate(): Promise<void> {
       return;
     }
     if (params.get('dev') === '1') {
-      const result = await api<{ access_token: string }>('/api/auth/dev', { method: 'POST', body: JSON.stringify({}) });
-      token = result.access_token; sessionStorage.setItem('user_token', token); return;
+      const result = await api<{ access_token: string; user: UserSummary }>('/api/auth/dev', { method: 'POST', body: JSON.stringify({}) });
+      token = result.access_token; currentUser = result.user; sessionStorage.setItem('user_token', token); return;
     }
     throw new Error("Telegram initData kelmadi. Mini App'ni botdagi 'Testlarni boshlash' tugmasi yoki BotFather Menu Button orqali oching; oddiy link sifatida ochilsa foydalanuvchi aniqlanmaydi.");
   }
   try {
-    const result = await api<{ access_token: string }>('/api/auth/telegram', {
+    const result = await api<{ access_token: string; user: UserSummary }>('/api/auth/telegram', {
       method: 'POST', body: JSON.stringify({ init_data: initData }),
     });
     token = result.access_token;
+    currentUser = result.user;
     sessionStorage.setItem('user_token', token);
   } catch (error) {
     if (!webappToken) throw error;
@@ -180,29 +199,38 @@ function modal(title: string, body: string, confirmText = 'Tasdiqlash'): Promise
 async function showHome(): Promise<void> {
   clearTimer(); clearAutoAdvance(); setBack(); loading();
   try {
-    const [me, tests] = await Promise.all([
-      api<{ full_name: string }>('/api/me'),
+    const [tests, activeAttempt] = await Promise.all([
       api<TestItem[]>('/api/tests'),
+      api<Attempt | null>('/api/attempts/active'),
     ]);
+    const me = currentUser || { full_name: 'Foydalanuvchi' };
+    const resume = activeAttempt ? `<section class="resume-card"><div><span class="badge warning">Tugallanmagan</span><h2>${escapeHtml(activeAttempt.test_name)}</h2><p>${activeAttempt.questions.filter(item => item.selected_answer_id !== null).length}/${activeAttempt.total_questions} ta belgilangan</p></div><button class="primary" id="resume-attempt">Davom etish</button></section>` : '';
     app.innerHTML = `<main class="page home-page">
       <header class="welcome"><div><p class="eyebrow">Testlar</p><h1>Salom, ${escapeHtml(me.full_name)}!</h1><p>Kerakli testni tanlang, yakunda natijangizni ko'rasiz.</p></div><div class="avatar"><img src="${logoUrl}" alt="Davlat bojxona xizmati logosi"></div></header>
+      ${resume}<details class="test-settings"><summary>Test sozlamalari</summary><div class="settings-grid"><label>Rejim<select id="feedback-mode"><option value="practice" ${preferences.feedbackMode === 'practice' ? 'selected' : ''}>Mashq: javob darhol ko‘rinadi</option><option value="exam" ${preferences.feedbackMode === 'exam' ? 'selected' : ''}>Imtihon: natija oxirida</option></select></label><label>Savollar soni<select id="question-count"><option value="0" ${preferences.questionCount === 0 ? 'selected' : ''}>Testdagi barchasi</option><option value="10" ${preferences.questionCount === 10 ? 'selected' : ''}>10 ta</option><option value="20" ${preferences.questionCount === 20 ? 'selected' : ''}>20 ta</option><option value="50" ${preferences.questionCount === 50 ? 'selected' : ''}>50 ta</option></select></label><label>Keyingi savol<select id="auto-advance"><option value="0" ${preferences.autoAdvanceSeconds === 0 ? 'selected' : ''}>Avtomatik o‘tmasin</option><option value="3" ${preferences.autoAdvanceSeconds === 3 ? 'selected' : ''}>3 soniyada</option><option value="5" ${preferences.autoAdvanceSeconds === 5 ? 'selected' : ''}>5 soniyada</option></select></label></div></details>
       <section><div class="section-title"><h2>Faol testlar</h2><span>${tests.length} ta</span></div><div class="test-grid">${tests.length ? tests.map(test => `
         <article class="test-card" data-test-id="${test.id}"><div class="test-icon">${test.test_mode === 'classifier' ? 'A' : 'T'}</div><div class="test-info"><h3>${escapeHtml(test.name)}</h3><p>${test.test_mode === 'classifier' ? 'Savollarni ajratish sinovi' : `${test.total_questions} ta savol`}${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ', vaqt cheklanmagan'}</p></div><button class="circle-button" aria-label="Boshlash">›</button></article>`).join('') : '<div class="empty">Hozircha faol test mavjud emas.</div>'}</div></section>
     </main>`;
+    document.querySelector('#resume-attempt')?.addEventListener('click', () => activeAttempt && openAttempt(activeAttempt.id));
+    document.querySelector('#feedback-mode')?.addEventListener('change', event => { preferences.feedbackMode = (event.target as HTMLSelectElement).value as Preferences['feedbackMode']; savePreferences(); });
+    document.querySelector('#question-count')?.addEventListener('change', event => { preferences.questionCount = Number((event.target as HTMLSelectElement).value); savePreferences(); });
+    document.querySelector('#auto-advance')?.addEventListener('change', event => { preferences.autoAdvanceSeconds = Number((event.target as HTMLSelectElement).value); savePreferences(); });
     document.querySelectorAll<HTMLElement>('[data-test-id]').forEach(card => card.addEventListener('click', () => startTest(Number(card.dataset.testId), tests.find(t => t.id === Number(card.dataset.testId))!)));
   } catch (error) { showFatal(error); }
 }
 
 async function startTest(testId: number, test: TestItem): Promise<void> {
+  const plannedCount = preferences.questionCount > 0 ? Math.min(preferences.questionCount, test.total_questions) : test.total_questions;
   const description = test.test_mode === 'classifier'
     ? `<p>Har bir savol bo'yicha u o'tgan yili tushgan yoki tushmaganligini belgilang.</p>`
-    : `<p>${test.total_questions} ta savol${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ''}.</p>`;
+    : `<p>${plannedCount} ta savol, ${preferences.feedbackMode === 'practice' ? 'mashq' : 'imtihon'} rejimi${test.time_limit_minutes ? `, ${test.time_limit_minutes} daqiqa` : ''}.</p>`;
   const accepted = await modal('Testni boshlaysizmi?', `<p><strong>${escapeHtml(test.name)}</strong></p>${description}`, 'Boshlash');
   if (!accepted) return;
   clearAutoAdvance();
   loading('Test tayyorlanmoqda...');
   try {
-    currentAttempt = await api<Attempt>('/api/attempts', { method: 'POST', body: JSON.stringify({ test_id: testId }) });
+    const requestedCount = preferences.questionCount > 0 ? plannedCount : null;
+    currentAttempt = await api<Attempt>('/api/attempts', { method: 'POST', body: JSON.stringify({ test_id: testId, question_count: requestedCount, feedback_mode: preferences.feedbackMode }) });
     currentIndex = 0; renderAttempt();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -246,14 +274,15 @@ function renderAttempt(): void {
   const question = currentAttempt.questions[currentIndex];
   const answered = currentAttempt.questions.filter(q => q.selected_answer_id !== null).length;
   const isLocked = question.selected_answer_id !== null || question.checking_answer_id != null;
-  const explanation = question.selected_answer_id !== null && question.explanation ? `<div class="answer-explanation"><strong>Tushuntirish</strong><p>${escapeHtml(question.explanation)}</p></div>` : '';
+  const explanation = currentAttempt.feedback_mode === 'practice' && question.selected_answer_id !== null && question.explanation ? `<div class="answer-explanation"><strong>Tushuntirish</strong><p>${escapeHtml(question.explanation)}</p></div>` : '';
   app.innerHTML = `<main class="test-page">
     <header class="test-header"><div class="test-title"><img class="test-logo" src="${logoUrl}" alt=""><div><span class="eyebrow">Test</span><h1>${escapeHtml(currentAttempt.test_name)}</h1></div></div>${currentAttempt.remaining_seconds !== null ? `<div class="timer" id="timer">${formatTime(currentAttempt.remaining_seconds)}</div>` : '<div class="timer">Cheksiz</div>'}</header>
     <details class="question-picker"><summary><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><b>Savollar ro'yxati</b></summary><nav class="question-nav" id="question-nav">${currentAttempt.questions.map((item, index) => `<button class="q-dot ${index === currentIndex ? 'current' : ''} ${item.is_correct === true ? 'correct' : item.is_correct === false ? 'wrong' : ''}" data-index="${index}">${index + 1}</button>`).join('')}</nav></details>
     <section class="question-wrap"><div class="progress-line"><span>${question.order_index}-savol / ${currentAttempt.total_questions}</span><span>${answered} ta javob</span></div><article class="question-card"><h2>${escapeHtml(question.question_text)}</h2><div class="answers">${question.answers.map((answer, index) => {
       let cls = '';
       if (question.selected_answer_id !== null) {
-        if (answer.correct) cls = 'correct';
+        if (currentAttempt?.feedback_mode === 'exam') cls = answer.id === question.selected_answer_id ? 'selected' : '';
+        else if (answer.correct) cls = 'correct';
         else if (answer.id === question.selected_answer_id) cls = 'wrong';
         else cls = 'dimmed';
       } else if (question.checking_answer_id === answer.id) {
@@ -336,17 +365,18 @@ async function answerCurrent(answerId: number): Promise<void> {
   question.checking_answer_id = answerId;
   renderAttempt();
   try {
-    const result = await api<{ is_correct: boolean; correct_answer_id: number; selected_answer_id: number; explanation?: string | null }>(`/api/attempts/${currentAttempt.id}/answer`, {
+    const result = await api<{ accepted: boolean; is_correct?: boolean; correct_answer_id?: number; selected_answer_id: number; explanation?: string | null }>(`/api/attempts/${currentAttempt.id}/answer`, {
       method: 'POST', body: JSON.stringify({ question_id: question.question_id, answer_id: answerId }),
     });
     question.selected_answer_id = result.selected_answer_id;
-    question.is_correct = result.is_correct;
+    question.is_correct = result.is_correct ?? null;
     question.checking_answer_id = null;
     question.explanation = result.explanation || question.explanation;
-    question.answers = question.answers.map(answer => ({ ...answer, correct: answer.id === result.correct_answer_id }));
-    tg?.HapticFeedback?.notificationOccurred(result.is_correct ? 'success' : 'error');
+    if (result.correct_answer_id != null) question.answers = question.answers.map(answer => ({ ...answer, correct: answer.id === result.correct_answer_id }));
+    tg?.HapticFeedback?.notificationOccurred(result.is_correct == null ? 'success' : result.is_correct ? 'success' : 'error');
     renderAttempt();
     clearAutoAdvance();
+    if (preferences.autoAdvanceSeconds <= 0) return;
     autoAdvanceTimerId = window.setTimeout(() => {
       autoAdvanceTimerId = null;
       if (!currentAttempt) return;
@@ -355,7 +385,7 @@ async function answerCurrent(answerId: number): Promise<void> {
       const previous = currentAttempt.questions.map((item, index) => ({ item, index })).reverse().find(row => row.index < answeredIndex && row.item.selected_answer_id === null)?.index ?? -1;
       const destination = next >= 0 ? next : previous;
       if (destination >= 0) { currentIndex = destination; renderAttempt(); }
-    }, 3000);
+    }, preferences.autoAdvanceSeconds * 1000);
   } catch (error) { question.checking_answer_id = null; toast(error instanceof Error ? error.message : String(error)); renderAttempt(); }
 }
 
@@ -378,6 +408,7 @@ async function classifyCurrent(appeared: boolean): Promise<void> {
     tg?.HapticFeedback?.notificationOccurred('success');
     if (result.promoted) toast("Savol 'Haqiqiy tushgan' manbasiga qo'shildi");
     renderAttempt();
+    if (preferences.autoAdvanceSeconds <= 0) return;
     autoAdvanceTimerId = window.setTimeout(() => {
       autoAdvanceTimerId = null;
       if (!currentAttempt || currentIndex !== answeredIndex) return;
@@ -385,7 +416,7 @@ async function classifyCurrent(appeared: boolean): Promise<void> {
       const previous = currentAttempt.questions.map((item, index) => ({ item, index })).reverse().find(row => row.index < answeredIndex && row.item.selected_answer_id === null)?.index ?? -1;
       const destination = next >= 0 ? next : previous;
       if (destination >= 0) { currentIndex = destination; renderAttempt(); }
-    }, 700);
+    }, preferences.autoAdvanceSeconds * 1000);
   } catch (error) {
     question.checking_answer_id = null;
     toast(error instanceof Error ? error.message : String(error));
@@ -422,7 +453,8 @@ function showResult(result: Result): void {
   const minutes = Math.floor(result.spent_seconds / 60); const seconds = result.spent_seconds % 60;
   const isClassifier = result.test_mode === 'classifier';
   const topics = result.topic_stats?.length ? `<div class="topic-results">${result.topic_stats.map(item => `<div><span>${escapeHtml(item.topic)}</span><b>${item.correct}/${item.total} (${item.percentage}%)</b></div>`).join('')}</div>` : '';
-  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${isClassifier ? 'OK' : result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${isClassifier ? result.answered : `${result.percentage}%`}</strong><span>${isClassifier ? 'belgilandi' : 'natija'}</span></div></div><h2>${isClassifier ? 'Ajratish yakunlandi' : evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>${isClassifier ? 'Tushgan' : "To'g'ri"}</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>${isClassifier ? 'Tushmagan' : "Noto'g'ri"}</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div>${isClassifier ? '' : topics}<div class="result-actions"><button class="secondary" id="share-result">Natijani rasm qilish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
+  app.innerHTML = `<main class="page result-page"><section class="result-card"><div class="result-emoji">${isClassifier ? 'OK' : result.percentage >= 70 ? 'OK' : '!'}</div><h1>${escapeHtml(result.test_name)}</h1><div class="score-ring" style="--score:${result.percentage}"><div><strong>${isClassifier ? result.answered : `${result.percentage}%`}</strong><span>${isClassifier ? 'belgilandi' : 'natija'}</span></div></div><h2>${isClassifier ? 'Ajratish yakunlandi' : evaluation(result.percentage)}</h2><div class="result-stats"><div><span>T</span><strong>${result.correct}</strong><small>${isClassifier ? 'Tushgan' : "To'g'ri"}</small></div><div><span>N</span><strong>${result.incorrect}</strong><small>${isClassifier ? 'Tushmagan' : "Noto'g'ri"}</small></div><div><span>J</span><strong>${result.unanswered}</strong><small>Javobsiz</small></div><div><span>V</span><strong>${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}</strong><small>Vaqt</small></div></div>${isClassifier ? '' : topics}<div class="result-actions">${!isClassifier && result.review?.length ? '<button class="secondary" id="review-result">Javoblarni ko‘rish</button>' : ''}<button class="secondary" id="share-result">Natijani rasm qilish</button><button class="primary" id="retry-test">Qayta ishlash</button><button class="ghost" id="home">Bosh sahifa</button></div></section></main>`;
+  document.querySelector('#review-result')?.addEventListener('click', () => showReviewItems(result.review || []));
   document.querySelector('#share-result')?.addEventListener('click', () => shareResultImage(result));
   document.querySelector('#retry-test')?.addEventListener('click', async () => {
     if (!currentAttempt) return; const tests = await api<TestItem[]>('/api/tests'); const test = tests.find(item => item.id === currentAttempt!.test_id); if (test) await startTest(test.id, test);
@@ -471,14 +503,10 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
 }
 
-async function showReview(attemptId: number): Promise<void> {
-  loading('Javoblar yuklanmoqda...');
-  try {
-    const review = await api<{ questions: Array<{ order_index: number; question_text: string; answers: Answer[]; selected_answer_id: number | null; correct_answer_id: number; is_correct: boolean | null }> }>(`/api/attempts/${attemptId}/review`);
-    setBack(() => currentAttempt && openAttempt(currentAttempt.id));
-    app.innerHTML = `<main class="page review-page"><header class="section-title"><h1>Javoblar tahlili</h1><span>${review.questions.length} ta</span></header><div class="review-list">${review.questions.map(item => `<article class="review-card ${item.is_correct ? 'ok' : 'bad'}"><div class="review-number">${item.order_index}</div><h3>${escapeHtml(item.question_text)}</h3>${item.answers.map(answer => `<div class="review-answer ${answer.correct ? 'correct' : answer.id === item.selected_answer_id ? 'wrong' : ''}">${answer.correct ? 'Togri:' : answer.id === item.selected_answer_id ? 'Siz tanlagan:' : '-'} ${escapeHtml(answer.text)}</div>`).join('')}</article>`).join('')}</div><button class="primary wide" id="review-home">Bosh sahifaga qaytish</button></main>`;
-    document.querySelector('#review-home')?.addEventListener('click', () => showHome());
-  } catch (error) { toast(error instanceof Error ? error.message : String(error)); await showHome(); }
+function showReviewItems(review: ReviewItem[]): void {
+  setBack(() => void showHome());
+  app.innerHTML = `<main class="page review-page"><header class="section-title"><h1>Javoblar tahlili</h1><span>${review.length} ta</span></header><div class="review-list">${review.map(item => `<article class="review-card ${item.is_correct ? 'ok' : 'bad'}"><div class="review-number">${item.order_index}</div><h3>${escapeHtml(item.question_text)}</h3>${item.answers.map(answer => `<div class="review-answer ${answer.correct ? 'correct' : answer.id === item.selected_answer_id ? 'wrong' : ''}">${answer.correct ? 'To‘g‘ri:' : answer.id === item.selected_answer_id ? 'Siz tanlagan:' : '-'} ${escapeHtml(answer.text)}</div>`).join('')}${item.explanation ? `<p class="review-explanation">${escapeHtml(item.explanation)}</p>` : ''}</article>`).join('')}</div><button class="primary wide" id="review-home">Bosh sahifaga qaytish</button></main>`;
+  document.querySelector('#review-home')?.addEventListener('click', () => showHome());
 }
 
 async function bootstrap(): Promise<void> {
