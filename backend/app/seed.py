@@ -1,13 +1,86 @@
 from __future__ import annotations
 
-from sqlalchemy import inspect, select, text
+import logging
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import delete, func, inspect, select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import get_settings
 from .database import Base, SessionLocal, engine
-from .models import Admin, Answer, Question, Source, Test, TestRule
+from .models import Admin, Answer, Attempt, AttemptResultCache, DailyTestStat, Question, Source, Test, TestAttemptStat, TestRule
 from .security import hash_password
 
 settings = get_settings()
+TASHKENT = ZoneInfo("Asia/Tashkent")
+logger = logging.getLogger(__name__)
+
+
+def _ensure_search_index() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_source_questions_text_trgm "
+                    "ON source_questions USING GIN (question_text gin_trgm_ops)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_source_answers_text_trgm "
+                    "ON source_answers USING GIN (answer_text gin_trgm_ops)"
+                )
+            )
+    except SQLAlchemyError:
+        logger.warning("pg_trgm qidiruv indeksi yaratilmadi; oddiy qidiruv ishlashda davom etadi", exc_info=True)
+
+
+def _backfill_daily_stats() -> None:
+    with SessionLocal() as db:
+        if (db.scalar(select(func.count(DailyTestStat.id))) or 0) > 0:
+            return
+        grouped: dict[tuple[object, str], DailyTestStat] = {}
+        for stat in db.scalars(select(TestAttemptStat).order_by(TestAttemptStat.finished_at)):
+            finished_at = stat.finished_at if stat.finished_at.tzinfo else stat.finished_at.replace(tzinfo=timezone.utc)
+            stat_date = finished_at.astimezone(TASHKENT).date()
+            test_key = f"id:{stat.test_id}" if stat.test_id else f"name:{stat.test_name_snapshot.casefold()}"
+            key = (stat_date, test_key)
+            daily = grouped.get(key)
+            if not daily:
+                daily = DailyTestStat(
+                    stat_date=stat_date,
+                    test_key=test_key,
+                    test_id=stat.test_id,
+                    test_name_snapshot=stat.test_name_snapshot,
+                    attempt_count=0,
+                    total_questions=0,
+                    total_correct=0,
+                    total_percentage=0,
+                    total_spent_seconds=0,
+                )
+                grouped[key] = daily
+            daily.attempt_count += 1
+            daily.total_questions += stat.total_questions
+            daily.total_correct += stat.correct_count
+            daily.total_percentage += stat.percentage
+            daily.total_spent_seconds += stat.spent_seconds
+        if grouped:
+            db.add_all(grouped.values())
+            db.commit()
+
+
+def _cleanup_transient_data() -> None:
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        db.execute(delete(AttemptResultCache).where(AttemptResultCache.expires_at < now))
+        db.execute(delete(Attempt).where(Attempt.started_at < now - timedelta(hours=24)))
+        old_stat_ids = select(TestAttemptStat.id).order_by(TestAttemptStat.finished_at.desc()).offset(100)
+        db.execute(delete(TestAttemptStat).where(TestAttemptStat.id.in_(old_stat_ids)))
+        db.commit()
 
 
 def _run_lightweight_migrations() -> None:
@@ -81,6 +154,18 @@ def _run_lightweight_migrations() -> None:
             # Old completed process rows are not needed for statistics or future quizzes.
             connection.execute(text("DELETE FROM group_quiz_sessions WHERE status IN ('finished', 'cancelled')"))
 
+    if "attempts" in table_names:
+        existing_attempts = {column["name"] for column in inspector.get_columns("attempts")}
+        if "feedback_mode" not in existing_attempts:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE attempts ADD COLUMN feedback_mode VARCHAR(20) NOT NULL DEFAULT 'practice'"))
+
+    if "attempt_questions" in table_names:
+        existing_attempt_questions = {column["name"] for column in inspector.get_columns("attempt_questions")}
+        if "explanation_snapshot" not in existing_attempt_questions:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE attempt_questions ADD COLUMN explanation_snapshot TEXT"))
+
     if {"attempts", "attempt_questions", "tests", "test_attempt_stats"}.issubset(table_names):
         with engine.begin() as connection:
             connection.execute(
@@ -113,6 +198,9 @@ def _run_lightweight_migrations() -> None:
 def initialize_database() -> None:
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
+    _ensure_search_index()
+    _backfill_daily_stats()
+    _cleanup_transient_data()
     with SessionLocal() as db:
         admin = db.scalar(select(Admin).where(Admin.username == settings.bootstrap_admin_username))
         if not admin and settings.bootstrap_admin_username and settings.bootstrap_admin_password:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 import sqlite3
 import tempfile
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -148,33 +150,27 @@ def parse_txt(content: bytes) -> list[ParsedQuestion]:
 
 
 def parse_docx(content: bytes) -> list[ParsedQuestion]:
-    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as handle:
-        handle.write(content)
-        temp_path = Path(handle.name)
-    try:
-        document = Document(temp_path)
-        if document.tables:
-            blocks: list[list[str]] = []
-            flattened: list[str] = []
-            separate_tables = True
-            for table in document.tables:
-                rows: list[str] = []
-                for row in table.rows:
-                    text = clean_text(" ".join(cell.text for cell in row.cells))
-                    if text and not SEPARATOR.match(text):
-                        rows.append(text)
-                        flattened.append(text)
-                if rows:
-                    if not QUESTION_PREFIX.match(rows[0]):
-                        separate_tables = False
-                    blocks.append(rows)
-            if separate_tables and blocks:
-                return _build_from_blocks(blocks)
-            return parse_lines(flattened)
-        paragraphs = [paragraph.text for paragraph in document.paragraphs if clean_text(paragraph.text)]
-        return parse_lines(paragraphs)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    document = Document(BytesIO(content))
+    if document.tables:
+        blocks: list[list[str]] = []
+        flattened: list[str] = []
+        separate_tables = True
+        for table in document.tables:
+            rows: list[str] = []
+            for row in table.rows:
+                text = clean_text(" ".join(cell.text for cell in row.cells))
+                if text and not SEPARATOR.match(text):
+                    rows.append(text)
+                    flattened.append(text)
+            if rows:
+                if not QUESTION_PREFIX.match(rows[0]):
+                    separate_tables = False
+                blocks.append(rows)
+        if separate_tables and blocks:
+            return _build_from_blocks(blocks)
+        return parse_lines(flattened)
+    paragraphs = [paragraph.text for paragraph in document.paragraphs if clean_text(paragraph.text)]
+    return parse_lines(paragraphs)
 
 
 def _safe_table_names(connection: sqlite3.Connection) -> set[str]:
@@ -207,12 +203,14 @@ def parse_db(content: bytes, mode: str = "single") -> list[ParsedQuestion]:
             ).fetchall()
             answer_columns = {row[1] for row in connection.execute("PRAGMA table_info(source_answers)")}
             answer_order = "COALESCE(position, id), id" if "position" in answer_columns else "id"
+            answers_by_question: dict[int, list[sqlite3.Row]] = defaultdict(list)
+            for answer_row in connection.execute(
+                f"SELECT question_id, answer_text, is_correct FROM source_answers ORDER BY question_id, {answer_order}"
+            ):
+                answers_by_question[int(answer_row["question_id"])].append(answer_row)
             result: list[ParsedQuestion] = []
             for question_row in questions:
-                answer_rows = connection.execute(
-                    f"SELECT answer_text, is_correct FROM source_answers WHERE question_id=? ORDER BY {answer_order}",
-                    (question_row["id"],),
-                ).fetchall()
+                answer_rows = answers_by_question[int(question_row["id"])]
                 answers = [
                     ParsedAnswer(
                         text=clean_text(TAG.sub("", str(answer_row["answer_text"]))),

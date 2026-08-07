@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -233,6 +233,7 @@ class Attempt(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     total_questions: Mapped[int] = mapped_column(Integer, nullable=False)
     correct_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    feedback_mode: Mapped[str] = mapped_column(String(20), default="practice", nullable=False)
 
     user: Mapped[User] = relationship(back_populates="attempts")
     test: Mapped[Test] = relationship(back_populates="attempts")
@@ -251,6 +252,7 @@ class AttemptQuestion(Base):
     question_id: Mapped[int | None] = mapped_column(ForeignKey("source_questions.id", ondelete="SET NULL"), index=True)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     question_text_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    explanation_snapshot: Mapped[str | None] = mapped_column(Text)
     answers_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     selected_answer_id: Mapped[int | None] = mapped_column(Integer)
     is_correct: Mapped[bool | None] = mapped_column(Boolean)
@@ -271,6 +273,32 @@ class TestAttemptStat(Base):
     correct_count: Mapped[int] = mapped_column(Integer, nullable=False)
     percentage: Mapped[int] = mapped_column(Integer, nullable=False)
     spent_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class DailyTestStat(Base):
+    __tablename__ = "daily_test_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    stat_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    test_key: Mapped[str] = mapped_column(String(280), nullable=False)
+    test_id: Mapped[int | None] = mapped_column(ForeignKey("tests.id", ondelete="SET NULL"), index=True)
+    test_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_questions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_correct: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_spent_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    __table_args__ = (UniqueConstraint("stat_date", "test_key", name="uq_daily_test_stat"),)
+
+
+class AttemptResultCache(Base):
+    __tablename__ = "attempt_result_cache"
+
+    attempt_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
 
 
 class QuestionClassificationVote(Base):

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
+from .deps import get_current_admin
 from .models import Admin, User
 from .schemas import AdminLoginRequest, DevAuthRequest, TelegramAuthRequest
 from .security import create_access_token, validate_telegram_init_data, validate_webapp_login_token, verify_password
@@ -20,6 +21,10 @@ _login_failures: dict[str, deque[datetime]] = defaultdict(deque)
 
 def _check_login_throttle(key: str) -> None:
     now = datetime.now(timezone.utc)
+    if len(_login_failures) > 5_000:
+        cutoff = now - timedelta(minutes=1)
+        for stale_key in [name for name, hits in _login_failures.items() if not hits or hits[-1] < cutoff][:1_000]:
+            _login_failures.pop(stale_key, None)
     queue = _login_failures[key]
     while queue and queue[0] < now - timedelta(minutes=1):
         queue.popleft()
@@ -82,3 +87,8 @@ def admin_login(payload: AdminLoginRequest, request: Request, db: Session = Depe
     _login_failures.pop(key, None)
     token = create_access_token(str(admin.id), "admin", timedelta(hours=settings.admin_token_hours))
     return {"access_token": token, "token_type": "bearer", "admin": {"id": admin.id, "username": admin.username}}
+
+
+@router.get("/admin/session")
+def admin_session(admin: Admin = Depends(get_current_admin)) -> dict:
+    return {"authenticated": True, "admin": {"id": admin.id, "username": admin.username}}

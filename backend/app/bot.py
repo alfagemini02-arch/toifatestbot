@@ -67,6 +67,24 @@ bot: Bot | None = None
 dp: Dispatcher | None = None
 router = Router()
 resolved_bot_username = settings.bot_username.lstrip("@").casefold()
+background_tasks: set[asyncio.Task] = set()
+
+
+def spawn_background(coro) -> asyncio.Task:  # noqa: ANN001
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(_background_done)
+    return task
+
+
+def _background_done(task: asyncio.Task) -> None:
+    background_tasks.discard(task)
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except Exception:  # noqa: BLE001
+        logger.exception("Telegram fon vazifasida xatolik")
 
 
 class Registration(StatesGroup):
@@ -370,7 +388,7 @@ async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("Guruh quiz savoli yuborilmadi")
-        asyncio.create_task(advance_group_quiz_later(bot_obj, session_id, 1))
+        spawn_background(advance_group_quiz_later(bot_obj, session_id, 1))
         return
 
     with SessionLocal() as db:
@@ -380,7 +398,7 @@ async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
             question_row.message_id = poll_message.message_id
             question_row.sent_at = utcnow()
             db.commit()
-    asyncio.create_task(advance_group_quiz_later(bot_obj, session_id, seconds))
+    spawn_background(advance_group_quiz_later(bot_obj, session_id, seconds))
 
 
 async def prepare_group_quiz_session(bot_obj: Bot, session_id: int) -> bool:
@@ -973,29 +991,45 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await callback.answer("Yuborish boshlandi")
     progress = await callback.message.edit_text("📢 Yuborilmoqda...") if callback.message else None
+    await state.clear()
+    spawn_background(
+        run_broadcast(
+            callback.bot,
+            callback.from_user.id,
+            int(source_chat_id),
+            int(source_message_id),
+            progress,
+        )
+    )
+
+
+async def run_broadcast(
+    bot_obj: Bot,
+    admin_tg_id: int,
+    source_chat_id: int,
+    source_message_id: int,
+    progress: Message | None,
+) -> None:
 
     with SessionLocal() as db:
         telegram_ids = list(db.scalars(select(User.telegram_id).where(User.is_blocked.is_(False))))
     sent = 0
     failed = 0
+    blocked_ids: list[int] = []
     for index, telegram_id in enumerate(telegram_ids, start=1):
         try:
-            await callback.bot.copy_message(chat_id=telegram_id, from_chat_id=source_chat_id, message_id=source_message_id)
+            await bot_obj.copy_message(chat_id=telegram_id, from_chat_id=source_chat_id, message_id=source_message_id)
             sent += 1
         except TelegramRetryAfter as exc:
             await asyncio.sleep(exc.retry_after)
             try:
-                await callback.bot.copy_message(chat_id=telegram_id, from_chat_id=source_chat_id, message_id=source_message_id)
+                await bot_obj.copy_message(chat_id=telegram_id, from_chat_id=source_chat_id, message_id=source_message_id)
                 sent += 1
             except Exception:  # noqa: BLE001
                 failed += 1
         except TelegramForbiddenError:
             failed += 1
-            with SessionLocal() as db:
-                user = db.scalar(select(User).where(User.telegram_id == telegram_id))
-                if user:
-                    user.is_blocked = True
-                    db.commit()
+            blocked_ids.append(telegram_id)
         except Exception:  # noqa: BLE001
             failed += 1
         if index % 25 == 0:
@@ -1006,9 +1040,11 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext) -> None:
             await progress.edit_text(f"📢 Yuborilmoqda... {index}/{len(telegram_ids)}")
 
     with SessionLocal() as db:
-        db.add(Broadcast(admin_tg_id=callback.from_user.id, content_type="copy_message", sent_count=sent, failed_count=failed))
+        if blocked_ids:
+            for user in db.scalars(select(User).where(User.telegram_id.in_(blocked_ids))):
+                user.is_blocked = True
+        db.add(Broadcast(admin_tg_id=admin_tg_id, content_type="copy_message", sent_count=sent, failed_count=failed))
         db.commit()
-    await state.clear()
     if progress:
         await progress.edit_text(f"✅ Yuborildi: {sent} ta\n❌ Yetib bormadi: {failed} ta")
 
@@ -1158,7 +1194,7 @@ async def group_quiz_start(callback: CallbackQuery) -> None:
         if pending:
             pending.start_vote_message_id = vote_message.message_id
             db.commit()
-    asyncio.create_task(expire_start_vote(callback.bot, session_id, vote_seconds))
+    spawn_background(expire_start_vote(callback.bot, session_id, vote_seconds))
 
 
 @router.callback_query(F.data.startswith("gquiz:vote_start:"))
@@ -1289,7 +1325,7 @@ async def group_quiz_stop(message: Message) -> None:
         if session:
             session.stop_vote_message_id = vote_message.message_id
             db.commit()
-    asyncio.create_task(expire_stop_vote(message.bot, session_id, vote_seconds))
+    spawn_background(expire_stop_vote(message.bot, session_id, vote_seconds))
 
 
 @router.callback_query(F.data.startswith("gquiz:vote_stop:"))
@@ -1421,23 +1457,40 @@ async def setup_bot() -> None:
     if dp is None:
         dp = Dispatcher()
         dp.include_router(router)
-    await publish_bot_commands(bot)
-
     if settings.normalized_webapp_url.startswith("https://") and settings.webhook_secret:
         webhook_url = f"{settings.normalized_webapp_url}/api/telegram/webhook"
-        await bot.set_webhook(
-            webhook_url,
-            secret_token=settings.webhook_secret,
-            allowed_updates=TELEGRAM_ALLOWED_UPDATES,
-            drop_pending_updates=False,
-        )
-        logger.info("Telegram webhook o'rnatildi: %s", webhook_url)
+        spawn_background(configure_telegram(bot, webhook_url))
     else:
         logger.warning("HTTPS WEBAPP_URL yoki WEBHOOK_SECRET yo'q. Webhook o'rnatilmadi")
 
 
+async def configure_telegram(bot_obj: Bot, webhook_url: str) -> None:
+    for attempt in range(1, 11):
+        try:
+            await publish_bot_commands(bot_obj)
+            await bot_obj.set_webhook(
+                webhook_url,
+                secret_token=settings.webhook_secret,
+                allowed_updates=TELEGRAM_ALLOWED_UPDATES,
+                drop_pending_updates=False,
+            )
+            logger.info("Telegram webhook o'rnatildi: %s", webhook_url)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            delay = min(60, attempt * 5)
+            logger.exception("Telegram sozlamasi bajarilmadi. %s soniyadan keyin qayta uriniladi", delay)
+            await asyncio.sleep(delay)
+    logger.error("Telegram webhook 10 urinishdan keyin ham o'rnatilmadi")
+
+
 async def shutdown_bot() -> None:
     global bot
+    for task in list(background_tasks):
+        task.cancel()
+    if background_tasks:
+        await asyncio.gather(*background_tasks, return_exceptions=True)
     if bot:
         await bot.session.close()
         bot = None

@@ -6,14 +6,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from .database import get_db
 from .deps import enforce_rate_limit, get_current_user
-from .models import Attempt, AttemptQuestion, ErrorReport, Question, Source, Test, TestRule, User
+from .models import Attempt, AttemptQuestion, ErrorReport, Question, Test, User
 from .schemas import AnswerSubmit, AttemptCreate, ClassificationSubmit, QuestionReportInput
 from .services import (
     auto_finish_if_expired,
     create_attempt,
-    finish_attempt,
+    finish_attempt_by_id,
     get_attempt,
-    review_attempt,
     serialize_attempt,
     serialize_test,
     submit_answer_by_id,
@@ -41,7 +40,7 @@ def list_tests(user: User = Depends(get_current_user), db: Session = Depends(get
     tests = list(
         db.scalars(
             select(Test)
-            .options(selectinload(Test.rules).selectinload(TestRule.source).selectinload(Source.questions))
+            .options(selectinload(Test.rules))
             .where(Test.is_active.is_(True))
             .order_by(Test.created_at.desc())
         ).unique()
@@ -69,14 +68,12 @@ def active_attempt(user: User = Depends(get_current_user), db: Session = Depends
 def start_attempt(payload: AttemptCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
     test = db.scalar(
         select(Test)
-        .options(
-            selectinload(Test.rules).selectinload(TestRule.source).selectinload(Source.questions).selectinload(Question.answers)
-        )
+        .options(selectinload(Test.rules))
         .where(Test.id == payload.test_id, Test.is_active.is_(True))
     )
     if not test:
         raise HTTPException(status_code=404, detail="Faol test topilmadi")
-    attempt = create_attempt(db, user, test)
+    attempt = create_attempt(db, user, test, payload.question_count, payload.feedback_mode)
     return serialize_attempt(attempt)
 
 
@@ -155,11 +152,4 @@ def report_question(
 
 @router.post("/attempts/{attempt_id}/finish")
 def finish(attempt_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    attempt = get_attempt(db, attempt_id, user.id)
-    return finish_attempt(db, attempt)
-
-
-@router.get("/attempts/{attempt_id}/review")
-def review(attempt_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    attempt = get_attempt(db, attempt_id, user.id)
-    return review_attempt(attempt)
+    return finish_attempt_by_id(db, attempt_id, user.id)

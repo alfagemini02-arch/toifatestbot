@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from .config import get_settings
 from .database import get_db
 from .deps import get_current_admin
 from .importers import ParsedQuestion, parse_uploaded_file
-from .models import Answer, Attempt, ErrorReport, Question, Source, TelegramGroup, Test, TestAttemptStat, TestRule, utcnow
+from .models import Answer, Attempt, DailyTestStat, ErrorReport, Question, Source, TelegramGroup, Test, TestAttemptStat, TestRule, utcnow
 from .schemas import (
     ImportCommitRequest,
     QuestionBulkDeleteRequest,
@@ -57,15 +58,22 @@ def _test_or_404(db: Session, test_id: int) -> Test:
     test = db.scalar(
         select(Test)
         .options(
-            selectinload(Test.rules)
-            .selectinload(TestRule.source)
-            .selectinload(Source.questions)
+            selectinload(Test.rules).selectinload(TestRule.source)
         )
         .where(Test.id == test_id)
     )
     if not test:
         raise HTTPException(status_code=404, detail="Test topilmadi")
     return test
+
+
+def _question_counts(db: Session) -> dict[int, int]:
+    return {
+        source_id: int(count)
+        for source_id, count in db.execute(
+            select(Question.source_id, func.count(Question.id)).group_by(Question.source_id)
+        ).all()
+    }
 
 
 def _report_or_404(db: Session, report_id: int) -> ErrorReport:
@@ -331,26 +339,29 @@ def source_questions(
 @router.get("/sources/{source_id}/duplicates")
 def source_duplicates(source_id: int, db: Session = Depends(get_db)) -> dict:
     source = _source_or_404(db, source_id)
-    questions = list(
-        db.scalars(
+    light_groups: dict[str, list[int]] = defaultdict(list)
+    for question_id, question_text in db.execute(
+        select(Question.id, Question.question_text).where(Question.source_id == source_id).order_by(Question.id)
+    ).all():
+        light_groups[_duplicate_key(question_text)].append(question_id)
+    duplicate_ids = [question_id for ids in light_groups.values() if len(ids) > 1 for question_id in ids]
+    loaded = {
+        question.id: question
+        for question in db.scalars(
             select(Question)
             .options(selectinload(Question.answers), selectinload(Question.source))
-            .where(Question.source_id == source_id)
-            .order_by(Question.id)
+            .where(Question.id.in_(duplicate_ids))
         ).unique()
-    )
-    groups: dict[str, list[Question]] = defaultdict(list)
-    for question in questions:
-        groups[_duplicate_key(question.question_text)].append(question)
+    } if duplicate_ids else {}
     duplicate_groups = [
         {
             "key": key,
-            "count": len(items),
-            "keep_id": items[0].id,
-            "items": [serialize_question(item) for item in items],
+            "count": len(ids),
+            "keep_id": ids[0],
+            "items": [serialize_question(loaded[question_id]) for question_id in ids if question_id in loaded],
         }
-        for key, items in groups.items()
-        if len(items) > 1
+        for key, ids in light_groups.items()
+        if len(ids) > 1
     ]
     duplicate_groups.sort(key=lambda group: group["count"], reverse=True)
     return {
@@ -499,21 +510,30 @@ def _write_test_rules(db: Session, test: Test, payload: TestInput) -> None:
 
 @router.get("/tests")
 def list_admin_tests(db: Session = Depends(get_db)) -> list[dict]:
-    attempts_count = select(func.count(TestAttemptStat.id)).where(TestAttemptStat.test_id == Test.id).correlate(Test).scalar_subquery()
     tests = list(
         db.scalars(
             select(Test)
-            .options(selectinload(Test.rules).selectinload(TestRule.source).selectinload(Source.questions))
+            .options(selectinload(Test.rules).selectinload(TestRule.source))
             .order_by(Test.created_at.desc())
         ).unique()
     )
-    counts = {row[0]: row[1] for row in db.execute(select(Test.id, attempts_count)).all()}
-    return [{**serialize_test(test), "attempt_count": counts.get(test.id, 0)} for test in tests]
+    attempt_counts = {
+        test_id: int(count or 0)
+        for test_id, count in db.execute(
+            select(DailyTestStat.test_id, func.sum(DailyTestStat.attempt_count)).group_by(DailyTestStat.test_id)
+        ).all()
+        if test_id is not None
+    }
+    question_counts = _question_counts(db)
+    return [
+        {**serialize_test(test, available_counts=question_counts), "attempt_count": attempt_counts.get(test.id, 0)}
+        for test in tests
+    ]
 
 
 @router.get("/tests/{test_id}")
 def get_admin_test(test_id: int, db: Session = Depends(get_db)) -> dict:
-    return serialize_test(_test_or_404(db, test_id))
+    return serialize_test(_test_or_404(db, test_id), available_counts=_question_counts(db))
 
 
 @router.post("/tests", status_code=201)
@@ -538,7 +558,7 @@ def create_test(payload: TestInput, db: Session = Depends(get_db)) -> dict:
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Bunday nomli test mavjud") from exc
-    return serialize_test(_test_or_404(db, test.id))
+    return serialize_test(_test_or_404(db, test.id), available_counts=_question_counts(db))
 
 
 @router.put("/tests/{test_id}")
@@ -560,7 +580,7 @@ def update_test(test_id: int, payload: TestInput, db: Session = Depends(get_db))
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Bunday nomli test mavjud") from exc
-    return serialize_test(_test_or_404(db, test.id))
+    return serialize_test(_test_or_404(db, test.id), available_counts=_question_counts(db))
 
 
 @router.delete("/tests/{test_id}")
@@ -590,7 +610,7 @@ async def parse_import(
     if source_id:
         _source_or_404(db, source_id)
     try:
-        parsed = parse_uploaded_file(filename, content, db_mode=db_mode)
+        parsed = await run_in_threadpool(lambda: parse_uploaded_file(filename, content, db_mode=db_mode))
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -645,6 +665,7 @@ def commit_import(payload: ImportCommitRequest, db: Session = Depends(get_db)) -
     added = 0
     skipped = 0
     source_cache: dict[str, Source] = {}
+    existing_by_source: dict[int, set[str]] = {}
     for item in payload.questions:
         parsed = ParsedQuestion(
             question=item.question.strip(),
@@ -674,28 +695,26 @@ def commit_import(payload: ImportCommitRequest, db: Session = Depends(get_db)) -
         assert source is not None
 
         if payload.skip_duplicates:
-            duplicate = db.scalar(
-                select(Question.id).where(
-                    Question.source_id == source.id,
-                    func.lower(Question.question_text) == item.question.strip().lower(),
-                )
-            )
-            if duplicate:
+            if source.id not in existing_by_source:
+                existing_by_source[source.id] = {
+                    _duplicate_key(text)
+                    for text in db.scalars(select(Question.question_text).where(Question.source_id == source.id))
+                }
+            normalized = _duplicate_key(item.question)
+            if normalized in existing_by_source[source.id]:
                 skipped += 1
                 continue
+            existing_by_source[source.id].add(normalized)
 
-        question = Question(source_id=source.id, question_text=item.question.strip())
+        question = Question(
+            source_id=source.id,
+            question_text=item.question.strip(),
+            answers=[
+                Answer(answer_text=answer.text.strip(), is_correct=answer.correct, position=position)
+                for position, answer in enumerate(item.answers)
+            ],
+        )
         db.add(question)
-        db.flush()
-        for position, answer in enumerate(item.answers):
-            db.add(
-                Answer(
-                    question_id=question.id,
-                    answer_text=answer.text.strip(),
-                    is_correct=answer.correct,
-                    position=position,
-                )
-            )
         added += 1
     db.commit()
     return {"added": added, "skipped": skipped}

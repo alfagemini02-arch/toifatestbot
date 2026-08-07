@@ -111,6 +111,8 @@ class TelegramGroupInput(BaseModel):
 
 class AttemptCreate(BaseModel):
     test_id: int
+    question_count: Annotated[int | None, Field(ge=1, le=200)] = None
+    feedback_mode: Annotated[str, Field(pattern="^(practice|exam)$")] = "practice"
 
 
 class AnswerSubmit(BaseModel):

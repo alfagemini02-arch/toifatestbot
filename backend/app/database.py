@@ -38,7 +38,8 @@ engine_kwargs: dict[str, object] = {
 if database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
-    engine_kwargs.update({"pool_size": 5, "max_overflow": 10, "pool_recycle": 1800})
+    # Bitta Render worker uchun kichik pool Supabase ulanish limitini asraydi.
+    engine_kwargs.update({"pool_size": 3, "max_overflow": 2, "pool_recycle": 1800, "pool_timeout": 15})
 
 engine = create_engine(database_url, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

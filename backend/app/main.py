@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,6 +55,7 @@ app.add_middleware(
 )
 trusted_hosts = settings.trusted_hosts or ["*"]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.include_router(auth_router)
 app.include_router(user_router)
@@ -62,9 +64,28 @@ app.include_router(admin_router)
 
 @app.middleware("http")
 async def uptime_head_middleware(request: Request, call_next):  # noqa: ANN001, ANN201
-    if request.method == "HEAD":
+    if request.method == "HEAD" and request.url.path in {"/", "/health", "/api/health"}:
         return Response(status_code=200)
-    return await call_next(request)
+    response = await call_next(request)
+    path = request.url.path
+    if "/assets/" in path:
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.endswith((".png", ".jpg", ".webp", ".woff2")):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    elif path.startswith(("/app", "/admin")):
+        response.headers["Cache-Control"] = "no-cache"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if path.startswith("/admin"):
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        )
+    return response
 
 
 @app.get("/api/health")
@@ -83,8 +104,6 @@ def health_head() -> Response:
 
 @app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
 def uptime_health() -> Response:
-    with SessionLocal() as db:
-        db.execute(text("SELECT 1"))
     return Response(content="OK", media_type="text/plain", status_code=200)
 
 
