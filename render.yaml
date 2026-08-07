@@ -3,7 +3,7 @@ services:
     name: telegram-test-miniapp
     runtime: docker
     plan: free
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: BOT_TOKEN
