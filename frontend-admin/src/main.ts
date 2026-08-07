@@ -23,7 +23,7 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
 const toastElement = document.querySelector<HTMLDivElement>('#toast')!;
 const logoUrl = '/admin/bojxona-logo.png';
-let token = localStorage.getItem('admin_token') || '';
+let token = sessionStorage.getItem('admin_token') || '';
 let sourceCache: Source[] = [];
 let parsedImport: ParsedQuestion[] = [];
 let debounceTimer: number | undefined;
@@ -47,7 +47,13 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 function loading(): void { document.querySelector<HTMLElement>('#content')!.innerHTML = '<div class="loading"><div class="spinner"></div><p>Yuklanmoqda…</p></div>'; }
-function logout(): void { token = ''; localStorage.removeItem('admin_token'); location.hash = ''; showLogin(); }
+function logout(): void {
+  token = '';
+  sessionStorage.removeItem('admin_token');
+  localStorage.removeItem('admin_token');
+  history.replaceState(null, '', '/admin/');
+  showLogin();
+}
 function formatDuration(seconds: number): string {
   if (!seconds || seconds < 1) return '—';
   const hours = Math.floor(seconds / 3600);
@@ -63,7 +69,7 @@ function showLogin(): void {
     button.disabled = true;
     try {
       const result = await api<{ access_token: string }>('/api/auth/admin/login', { method: 'POST', body: JSON.stringify({ username: form.get('username'), password: form.get('password') }) });
-      token = result.access_token; localStorage.setItem('admin_token', token); showShell();
+      token = result.access_token; sessionStorage.setItem('admin_token', token); showShell();
     } catch (error) { document.querySelector('#login-error')!.textContent = error instanceof Error ? error.message : String(error); }
     finally { button.disabled = false; }
   });
@@ -505,7 +511,22 @@ function showFormError(selector: string, error: unknown): void {
 }
 function showError(error: unknown, selector = '#content'): void { const target = document.querySelector(selector); if (!target) { if (!token) showLogin(); return; } const message = error instanceof Error ? error.message : String(error); target.innerHTML = `<div class="error-box"><strong>⚠️ Xatolik</strong><p>${esc(message)}</p><button class="ghost compact" onclick="location.reload()">Qayta yuklash</button></div>`; }
 
-if (token) showShell(); else showLogin();
+async function bootstrapAdmin(): Promise<void> {
+  // Eski localStorage tokenlarini ham bekor qilamiz: admin sessiyasi tab yopilganda tugashi kerak.
+  localStorage.removeItem('admin_token');
+  if (!token) {
+    showLogin();
+    return;
+  }
+  try {
+    await api('/api/auth/admin/session');
+    showShell();
+  } catch {
+    logout();
+  }
+}
+
+void bootstrapAdmin();
 
 
 
