@@ -16,6 +16,8 @@ def test_admin_and_user_api_flow() -> None:
         assert login.status_code == 200, login.text
         admin_token = login.json()['access_token']
         admin_headers = auth_header(admin_token)
+        assert client.get('/api/auth/admin/session').status_code == 401
+        assert client.get('/api/auth/admin/session', headers=admin_headers).json()['authenticated'] is True
 
         source_response = client.post('/api/admin/sources', headers=admin_headers, json={'name': 'API manba'})
         assert source_response.status_code == 201, source_response.text
@@ -106,6 +108,13 @@ def test_admin_and_user_api_flow() -> None:
         )
         assert answer_response.status_code == 200, answer_response.text
         assert answer_response.json()['is_correct'] is True
+        repeated_answer = client.post(
+            f"/api/attempts/{attempt['id']}/answer",
+            headers=user_headers,
+            json={'question_id': question['question_id'], 'answer_id': correct_answer_id},
+        )
+        assert repeated_answer.status_code == 200, repeated_answer.text
+        assert repeated_answer.json()['already_answered'] is True
 
         report_response = client.post(
             f"/api/questions/{question['question_id']}/reports",
@@ -130,6 +139,9 @@ def test_admin_and_user_api_flow() -> None:
         finish = client.post(f"/api/attempts/{attempt['id']}/finish", headers=user_headers)
         assert finish.status_code == 200, finish.text
         assert finish.json()['percentage'] == 100
+        repeated_finish = client.post(f"/api/attempts/{attempt['id']}/finish", headers=user_headers)
+        assert repeated_finish.status_code == 200, repeated_finish.text
+        assert repeated_finish.json() == finish.json()
 
         dashboard = client.get('/api/admin/stats', headers=admin_headers)
         assert dashboard.status_code == 200, dashboard.text
@@ -139,3 +151,23 @@ def test_admin_and_user_api_flow() -> None:
         assert dashboard_data['recent_attempts'][0]['correct_count'] == 1
         assert dashboard_data['recent_attempts'][0]['total_questions'] == 1
         assert 'spent_seconds' in dashboard_data['recent_attempts'][0]
+
+        exam_attempt = client.post(
+            '/api/attempts',
+            headers=user_headers,
+            json={'test_id': test_id, 'question_count': 1, 'feedback_mode': 'exam'},
+        )
+        assert exam_attempt.status_code == 201, exam_attempt.text
+        exam_payload = exam_attempt.json()
+        exam_question = exam_payload['questions'][0]
+        exam_answer = client.post(
+            f"/api/attempts/{exam_payload['id']}/answer",
+            headers=user_headers,
+            json={'question_id': exam_question['question_id'], 'answer_id': correct_answer_id},
+        )
+        assert exam_answer.status_code == 200, exam_answer.text
+        assert 'is_correct' not in exam_answer.json()
+        assert 'correct_answer_id' not in exam_answer.json()
+        exam_finish = client.post(f"/api/attempts/{exam_payload['id']}/finish", headers=user_headers)
+        assert exam_finish.status_code == 200, exam_finish.text
+        assert exam_finish.json()['review'][0]['correct_answer_id'] == correct_answer_id
