@@ -67,6 +67,7 @@ bot: Bot | None = None
 dp: Dispatcher | None = None
 router = Router()
 resolved_bot_username = settings.bot_username.lstrip("@").casefold()
+bot_username_confirmed = False
 background_tasks: set[asyncio.Task] = set()
 
 
@@ -120,10 +121,18 @@ def addressed_group_command_is(*commands: str):  # noqa: ANN201
     expected = {command.casefold() for command in commands}
 
     def matches(value: str | None) -> bool:
-        if not value or not resolved_bot_username:
+        if not value:
             return False
-        match = re.fullmatch(r"/([a-z0-9_]+)@([a-z0-9_]+)(?:\s+.*)?", value.strip(), flags=re.IGNORECASE)
-        return bool(match and match.group(1).casefold() in expected and match.group(2).casefold() == resolved_bot_username)
+        match = re.fullmatch(r"/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?:\s+.*)?", value.strip(), flags=re.IGNORECASE)
+        if not match or match.group(1).casefold() not in expected:
+            return False
+        mention = (match.group(2) or "").casefold()
+        if not mention:
+            return True
+        if bot_username_confirmed:
+            return mention == resolved_bot_username
+        # getMe vaqtincha ishlamasa ham ushbu botga yuborilgan komanda jim qolmasin.
+        return True
 
     return F.text.func(matches)
 
@@ -1425,6 +1434,17 @@ async def group_quiz_poll_answer(poll_answer: PollAnswer) -> None:
         db.commit()
 
 
+@router.message(F.text.startswith("/"), F.chat.type.in_(GROUP_CHAT_TYPES))
+async def unknown_group_command(message: Message) -> None:
+    logger.warning(
+        "Guruh komandasi mos kelmadi: chat_id=%s text=%r resolved_username=%r confirmed=%s",
+        message.chat.id,
+        message.text,
+        resolved_bot_username,
+        bot_username_confirmed,
+    )
+
+
 @router.message(F.text)
 async def unknown_text(message: Message) -> None:
     if is_group_chat(message):
@@ -1436,27 +1456,78 @@ async def unknown_text(message: Message) -> None:
     await message.answer("Avval /start ni bosing va ro'yxatdan o'ting.")
 
 
+async def recover_group_quizzes(bot_obj: Bot) -> None:
+    recovery_actions: list[tuple[str, int, int]] = []
+    now = utcnow()
+    with SessionLocal() as db:
+        sessions = list(
+            db.scalars(
+                select(GroupQuizSession)
+                .options(selectinload(GroupQuizSession.questions))
+                .where(GroupQuizSession.status.in_(GROUP_QUIZ_LIVE_STATUSES))
+                .order_by(GroupQuizSession.id)
+            ).unique()
+        )
+        for session in sessions:
+            if session.status == "pending_start":
+                deadline = normalized_utc(session.start_vote_deadline)
+                seconds = max(0, int((deadline - now).total_seconds())) if deadline else 0
+                recovery_actions.append(("start_vote", session.id, seconds))
+            elif session.status == "starting":
+                recovery_actions.append(("prepare", session.id, 0))
+            elif session.status == "stopping":
+                recovery_actions.append(("finish", session.id, 0))
+            elif session.status == "active":
+                current = next(
+                    (question for question in session.questions if question.order_index == session.current_index + 1),
+                    None,
+                )
+                if not current or not current.sent_at:
+                    recovery_actions.append(("send", session.id, 0))
+                else:
+                    sent_at = normalized_utc(current.sent_at) or now
+                    elapsed = max(0, int((now - sent_at).total_seconds()))
+                    seconds = max(0, session.question_seconds - elapsed)
+                    recovery_actions.append(("advance", session.id, seconds))
+                stop_deadline = normalized_utc(session.stop_vote_deadline)
+                if stop_deadline:
+                    stop_seconds = max(0, int((stop_deadline - now).total_seconds()))
+                    recovery_actions.append(("stop_vote", session.id, stop_seconds))
+
+    for action, session_id, seconds in recovery_actions:
+        if action == "start_vote":
+            spawn_background(expire_start_vote(bot_obj, session_id, seconds))
+        elif action == "prepare":
+            spawn_background(prepare_group_quiz_session(bot_obj, session_id))
+        elif action == "finish":
+            spawn_background(send_group_quiz_results(bot_obj, session_id, stopped_early=True))
+        elif action == "send":
+            spawn_background(send_group_quiz_question(bot_obj, session_id))
+        elif action == "advance":
+            spawn_background(advance_group_quiz_later(bot_obj, session_id, seconds))
+        elif action == "stop_vote":
+            spawn_background(expire_stop_vote(bot_obj, session_id, seconds))
+    if recovery_actions:
+        logger.info("%s ta guruh quiz tiklash amali rejalashtirildi", len(recovery_actions))
+
+
 async def setup_bot() -> None:
-    global bot, dp, resolved_bot_username
+    global bot, bot_username_confirmed, dp, resolved_bot_username
     if not settings.bot_token:
         logger.warning("BOT_TOKEN mavjud emas, Telegram bot ishga tushmaydi")
         return
-    with SessionLocal() as db:
-        stale_count = db.scalar(select(func.count(GroupQuizSession.id))) or 0
-        if stale_count:
-            db.execute(delete(GroupQuizSession))
-            db.commit()
-            logger.info("%s ta eski guruh quiz jarayoni tozalandi", stale_count)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         identity = await bot.get_me()
         if identity.username:
             resolved_bot_username = identity.username.casefold()
+            bot_username_confirmed = True
     except Exception:  # noqa: BLE001
         logger.exception("Bot username aniqlanmadi, BOT_USERNAME qiymati ishlatiladi")
     if dp is None:
         dp = Dispatcher()
         dp.include_router(router)
+    await recover_group_quizzes(bot)
     if settings.normalized_webapp_url.startswith("https://") and settings.webhook_secret:
         webhook_url = f"{settings.normalized_webapp_url}/api/telegram/webhook"
         spawn_background(configure_telegram(bot, webhook_url))
@@ -1465,8 +1536,13 @@ async def setup_bot() -> None:
 
 
 async def configure_telegram(bot_obj: Bot, webhook_url: str) -> None:
+    global bot_username_confirmed, resolved_bot_username
     for attempt in range(1, 11):
         try:
+            identity = await bot_obj.get_me()
+            if identity.username:
+                resolved_bot_username = identity.username.casefold()
+                bot_username_confirmed = True
             await publish_bot_commands(bot_obj)
             await bot_obj.set_webhook(
                 webhook_url,
@@ -1499,5 +1575,10 @@ async def shutdown_bot() -> None:
 async def process_update(update_data: dict) -> None:
     if not bot or not dp:
         raise RuntimeError("Bot sozlanmagan")
+    message_data = update_data.get("message") or {}
+    chat_data = message_data.get("chat") or {}
+    text_value = message_data.get("text")
+    if chat_data.get("type") in GROUP_CHAT_TYPES and isinstance(text_value, str) and text_value.startswith("/"):
+        logger.info("Guruh komandasi qabul qilindi: chat_id=%s text=%r", chat_data.get("id"), text_value)
     update = Update.model_validate(update_data, context={"bot": bot})
     await dp.feed_update(bot, update)
