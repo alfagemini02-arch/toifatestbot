@@ -9,6 +9,15 @@ type TelegramGroup = { id: number; chat_id: number; title: string | null; is_all
 type ParsedQuestion = { question: string; answers: Answer[]; valid: boolean; problems: string[]; duplicate_in_file: boolean; duplicate_in_database: boolean; source_name?: string | null };
 type ErrorReport = { id: number; status: string; message_text: string | null; created_at: string; fixed_at: string | null; attempt_id: number | null; question_id: number | null; question_text: string | null; source_name: string | null; answers: Answer[]; question: Question | null; user: { full_name: string | null; telegram_id: number | null; phone: string | null; username: string | null } };
 type DuplicateGroup = { key: string; count: number; keep_id: number; items: Question[] };
+type DashboardStats = {
+  users: { today: number; week: number; total: number };
+  attempts: { today: number; total: number; average: number };
+  reports: { open: number; fixed: number };
+  popular_test: { name: string; count: number } | null;
+  last_7_days: { date: string; count: number }[];
+  recent_attempts: { id: number; test: string; percentage: number; correct_count: number; total_questions: number; spent_seconds: number; finished_at: string }[];
+  updated_at: string;
+};
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 const modalRoot = document.querySelector<HTMLDivElement>('#modal-root')!;
@@ -39,6 +48,13 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 function loading(): void { document.querySelector<HTMLElement>('#content')!.innerHTML = '<div class="loading"><div class="spinner"></div><p>Yuklanmoqda…</p></div>'; }
 function logout(): void { token = ''; localStorage.removeItem('admin_token'); location.hash = ''; showLogin(); }
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds < 1) return '—';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}` : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
 
 function showLogin(): void {
   app.innerHTML = `<main class="login-page"><form class="login-card" id="login-form"><div class="brand-mark"><img src="${logoUrl}" alt="Davlat bojxona xizmati logosi"></div><h1>Admin panel</h1><p>Testlar va savollarni boshqarish</p><label>Login<input name="username" autocomplete="username" required autofocus></label><label>Parol<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Kirish</button><div class="form-error" id="login-error"></div></form></main>`;
@@ -92,12 +108,31 @@ async function route(): Promise<void> {
 }
 
 async function showDashboard(): Promise<void> {
-  setTitle('Bosh sahifa', 'Real vaqt statistikasi'); loading();
+  setTitle('Bosh sahifa', 'Tizim ko‘rsatkichlari'); loading();
   try {
-    const stats = await api<any>('/api/admin/stats'); const max = Math.max(1, ...stats.last_7_days.map((d: any) => d.count));
-    document.querySelector('#content')!.innerHTML = `<div class="stats-grid"><article><span>👥</span><div><strong>${stats.users.total}</strong><small>Jami foydalanuvchilar</small></div></article><article><span>📝</span><div><strong>${stats.attempts.today}</strong><small>Bugungi testlar</small></div></article><article><span>🎯</span><div><strong>${stats.attempts.average}%</strong><small>O‘rtacha natija</small></div></article><article><span>⚠️</span><div><strong>${stats.reports.open}</strong><small>Ochiq xatoliklar</small></div></article></div>
-    <div class="dashboard-grid"><section class="panel"><div class="panel-title"><h2>Oxirgi 7 kun</h2><span>Test urinishlari</span></div><div class="bar-chart">${stats.last_7_days.map((d: any) => `<div><span style="height:${Math.max(5, d.count / max * 100)}%" title="${d.count}"></span><b>${d.count}</b><small>${d.date}</small></div>`).join('')}</div></section><section class="panel"><div class="panel-title"><h2>Asosiy ko‘rsatkichlar</h2></div><dl class="facts"><div><dt>Bugun qo‘shilgan</dt><dd>${stats.users.today}</dd></div><div><dt>Shu hafta</dt><dd>${stats.users.week}</dd></div><div><dt>Jami testlar</dt><dd>${stats.attempts.total}</dd></div><div><dt>Eng mashhur</dt><dd>${esc(stats.popular_test?.name || '—')}</dd></div></dl></section></div>
-    <section class="panel"><div class="panel-title"><h2>Oxirgi urinishlar</h2></div><div class="table-wrap"><table><thead><tr><th>Foydalanuvchi</th><th>Test</th><th>Natija</th><th>Vaqt</th></tr></thead><tbody>${stats.recent_attempts.map((r: any) => `<tr><td>${esc(r.user)}</td><td>${esc(r.test)}</td><td><span class="score ${r.percentage >= 70 ? 'good' : r.percentage >= 50 ? 'mid' : 'bad'}">${r.percentage}%</span></td><td>${new Date(r.finished_at).toLocaleString('uz-UZ')}</td></tr>`).join('') || '<tr><td colspan="4" class="empty-cell">Urinishlar yo‘q</td></tr>'}</tbody></table></div></section>`;
+    const stats = await api<DashboardStats>('/api/admin/stats');
+    const max = Math.max(1, ...stats.last_7_days.map(day => day.count));
+    const bars = stats.last_7_days.map((day, index) => {
+      const height = day.count ? Math.max(10, Math.round(day.count / max * 100)) : 0;
+      return `<div class="chart-column" style="--bar-size:${height}%;--bar-delay:${index * 45}ms">
+        <div class="chart-stage"><b style="bottom:calc(${height}% + 8px)">${day.count}</b><span title="${day.count} ta urinish"></span></div>
+        <small>${day.date}</small>
+      </div>`;
+    }).join('');
+    const updatedAt = new Date(stats.updated_at).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+    document.querySelector('#content')!.innerHTML = `<div class="dashboard-view">
+      <div class="stats-grid" aria-label="Asosiy ko‘rsatkichlar">
+        <article class="metric-card metric-users"><span class="metric-icon" aria-hidden="true">👥</span><div><small>Jami foydalanuvchilar</small><strong>${stats.users.total}</strong><em>Bugun +${stats.users.today}</em></div></article>
+        <article class="metric-card metric-tests"><span class="metric-icon" aria-hidden="true">📝</span><div><small>Bugungi testlar</small><strong>${stats.attempts.today}</strong><em>Jami ${stats.attempts.total} ta</em></div></article>
+        <article class="metric-card metric-score"><span class="metric-icon" aria-hidden="true">🎯</span><div><small>O‘rtacha natija</small><strong>${stats.attempts.average}%</strong><em>Barcha urinishlar</em></div></article>
+        <article class="metric-card metric-reports"><span class="metric-icon" aria-hidden="true">⚠️</span><div><small>Ochiq xatoliklar</small><strong>${stats.reports.open}</strong><em>${stats.reports.fixed} ta hal qilingan</em></div></article>
+      </div>
+      <div class="dashboard-grid">
+        <section class="panel dashboard-chart-panel"><div class="panel-title"><div><h2>7 kunlik faollik</h2><span>Kunlar bo‘yicha yakunlangan testlar</span></div><time datetime="${esc(stats.updated_at)}">${updatedAt} da yangilandi</time></div><div class="bar-chart" role="img" aria-label="Oxirgi yetti kundagi test urinishlari">${bars}</div></section>
+        <section class="panel dashboard-summary"><div class="panel-title"><div><h2>Qisqa jamlanma</h2><span>Hozirgi holat</span></div></div><dl class="facts"><div><dt>Shu hafta qo‘shilgan</dt><dd>${stats.users.week}</dd></div><div><dt>Jami test ishlangan</dt><dd>${stats.attempts.total}</dd></div><div><dt>Eng mashhur test</dt><dd>${esc(stats.popular_test?.name || '—')}<small>${stats.popular_test ? `${stats.popular_test.count} marta` : ''}</small></dd></div><div><dt>Hal qilingan xatoliklar</dt><dd>${stats.reports.fixed}</dd></div></dl></section>
+      </div>
+      <section class="panel dashboard-activity"><div class="panel-title"><div><h2>So‘nggi test faoliyati</h2><span>Shaxsiy ma’lumotlar saqlanmaydi</span></div></div><div class="table-wrap"><table><thead><tr><th>Test</th><th>Natija</th><th>To‘g‘ri javob</th><th>Davomiyligi</th><th>Yakunlangan vaqt</th></tr></thead><tbody>${stats.recent_attempts.map(row => `<tr><td><strong>${esc(row.test)}</strong></td><td><span class="score ${row.percentage >= 70 ? 'good' : row.percentage >= 50 ? 'mid' : 'bad'}">${row.percentage}%</span></td><td>${row.correct_count}/${row.total_questions}</td><td>${formatDuration(row.spent_seconds)}</td><td>${new Date(row.finished_at).toLocaleString('uz-UZ')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-cell">Hali yakunlangan testlar yo‘q</td></tr>'}</tbody></table></div></section>
+    </div>`;
   } catch (error) { showError(error); }
 }
 
