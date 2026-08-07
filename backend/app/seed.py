@@ -14,6 +14,10 @@ def _run_lightweight_migrations() -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
 
+    if "users" in table_names:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_registered_at ON users (registered_at)"))
+
     if "error_reports" in table_names:
         existing = {column["name"] for column in inspector.get_columns("error_reports")}
         json_type = "JSON" if engine.dialect.name != "sqlite" else "TEXT"

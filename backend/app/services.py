@@ -493,17 +493,54 @@ def admin_dashboard_stats(db: Session) -> dict[str, Any]:
     today_start = today_start_local.astimezone(timezone.utc)
     week_start = (today_start_local - timedelta(days=today_start_local.weekday())).astimezone(timezone.utc)
 
-    total_users = db.scalar(select(func.count(User.id))) or 0
-    today_users = db.scalar(select(func.count(User.id)).where(User.registered_at >= today_start)) or 0
-    week_users = db.scalar(select(func.count(User.id)).where(User.registered_at >= week_start)) or 0
-    total_attempts = db.scalar(select(func.count(TestAttemptStat.id))) or 0
-    today_attempts = db.scalar(select(func.count(TestAttemptStat.id)).where(TestAttemptStat.finished_at >= today_start)) or 0
-    open_reports = db.scalar(select(func.count(ErrorReport.id)).where(ErrorReport.status == "open")) or 0
-    fixed_reports = db.scalar(select(func.count(ErrorReport.id)).where(ErrorReport.status == "fixed")) or 0
+    total_users, today_users, week_users = db.execute(
+        select(
+            func.count(User.id),
+            func.count(User.id).filter(User.registered_at >= today_start),
+            func.count(User.id).filter(User.registered_at >= week_start),
+        )
+    ).one()
 
-    average = db.scalar(
-        select(func.avg(TestAttemptStat.percentage))
-    ) or 0
+    day_ranges: list[tuple[datetime, datetime, str]] = []
+    for offset in range(6, -1, -1):
+        day_local = today_start_local - timedelta(days=offset)
+        next_local = day_local + timedelta(days=1)
+        day_ranges.append(
+            (
+                day_local.astimezone(timezone.utc),
+                next_local.astimezone(timezone.utc),
+                day_local.strftime("%d.%m"),
+            )
+        )
+
+    attempt_metrics = db.execute(
+        select(
+            func.count(TestAttemptStat.id),
+            func.count(TestAttemptStat.id).filter(TestAttemptStat.finished_at >= today_start),
+            func.avg(TestAttemptStat.percentage),
+            *[
+                func.count(TestAttemptStat.id).filter(
+                    TestAttemptStat.finished_at >= range_start,
+                    TestAttemptStat.finished_at < range_end,
+                )
+                for range_start, range_end, _ in day_ranges
+            ],
+        )
+    ).one()
+    total_attempts = int(attempt_metrics[0] or 0)
+    today_attempts = int(attempt_metrics[1] or 0)
+    average = float(attempt_metrics[2] or 0)
+    last_7 = [
+        {"date": label, "count": int(attempt_metrics[index + 3] or 0)}
+        for index, (_, _, label) in enumerate(day_ranges)
+    ]
+
+    open_reports, fixed_reports = db.execute(
+        select(
+            func.count(ErrorReport.id).filter(ErrorReport.status == "open"),
+            func.count(ErrorReport.id).filter(ErrorReport.status == "fixed"),
+        )
+    ).one()
 
     popular = db.execute(
         select(TestAttemptStat.test_name_snapshot, func.count(TestAttemptStat.id).label("count"))
@@ -512,36 +549,26 @@ def admin_dashboard_stats(db: Session) -> dict[str, Any]:
         .limit(1)
     ).first()
 
-    last_7: list[dict[str, Any]] = []
-    for offset in range(6, -1, -1):
-        day_local = today_start_local - timedelta(days=offset)
-        next_local = day_local + timedelta(days=1)
-        count = db.scalar(
-            select(func.count(TestAttemptStat.id)).where(
-                TestAttemptStat.finished_at >= day_local.astimezone(timezone.utc),
-                TestAttemptStat.finished_at < next_local.astimezone(timezone.utc),
-            )
-        ) or 0
-        last_7.append({"date": day_local.strftime("%d.%m"), "count": count})
-
     recent_rows = list(
         db.scalars(select(TestAttemptStat).order_by(TestAttemptStat.finished_at.desc()).limit(10))
     )
     recent = [
         {
             "id": stat.id,
-            "user": "Saqlanmagan",
             "test": stat.test_name_snapshot,
             "percentage": stat.percentage,
+            "correct_count": stat.correct_count,
+            "total_questions": stat.total_questions,
+            "spent_seconds": stat.spent_seconds,
             "finished_at": stat.finished_at.isoformat(),
         }
         for stat in recent_rows
     ]
 
     return {
-        "users": {"today": today_users, "week": week_users, "total": total_users},
-        "attempts": {"today": today_attempts, "total": total_attempts, "average": round(float(average))},
-        "reports": {"open": open_reports, "fixed": fixed_reports},
+        "users": {"today": int(today_users or 0), "week": int(week_users or 0), "total": int(total_users or 0)},
+        "attempts": {"today": today_attempts, "total": total_attempts, "average": round(average)},
+        "reports": {"open": int(open_reports or 0), "fixed": int(fixed_reports or 0)},
         "popular_test": {"name": popular[0], "count": popular[1]} if popular else None,
         "last_7_days": last_7,
         "recent_attempts": recent,

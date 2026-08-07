@@ -21,7 +21,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str] = mapped_column(String(32), nullable=False)
     username: Mapped[str | None] = mapped_column(String(64))
-    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
