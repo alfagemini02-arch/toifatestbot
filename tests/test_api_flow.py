@@ -130,3 +130,12 @@ def test_admin_and_user_api_flow() -> None:
         finish = client.post(f"/api/attempts/{attempt['id']}/finish", headers=user_headers)
         assert finish.status_code == 200, finish.text
         assert finish.json()['percentage'] == 100
+
+        dashboard = client.get('/api/admin/stats', headers=admin_headers)
+        assert dashboard.status_code == 200, dashboard.text
+        dashboard_data = dashboard.json()
+        assert len(dashboard_data['last_7_days']) == 7
+        assert dashboard_data['attempts']['total'] == 1
+        assert dashboard_data['recent_attempts'][0]['correct_count'] == 1
+        assert dashboard_data['recent_attempts'][0]['total_questions'] == 1
+        assert 'spent_seconds' in dashboard_data['recent_attempts'][0]
