@@ -248,8 +248,8 @@ def format_vote_window(seconds: int) -> str:
     return f"{seconds} soniya"
 
 
-def profile_link(user_id: int, username: str | None, full_name: str | None) -> str:
-    display_name = limit_poll_text(full_name or (f"@{username}" if username else str(user_id)), 48)
+def profile_link(user_id: int, username: str | None, full_name: str | None, max_length: int = 48) -> str:
+    display_name = limit_poll_text(full_name or (f"@{username}" if username else str(user_id)), max_length)
     label = html.escape(display_name)
     if username and re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
         return f'<a href="https://t.me/{username}">{label}</a>'
@@ -258,7 +258,7 @@ def profile_link(user_id: int, username: str | None, full_name: str | None) -> s
 
 def make_group_quiz_snapshot(question: Question) -> tuple[list[dict[str, object]], int]:
     answers = [
-        {"id": answer.id, "text": limit_poll_text(answer.answer_text, 100), "correct": answer.is_correct}
+        {"id": answer.id, "text": answer.answer_text.strip(), "correct": answer.is_correct}
         for answer in question.answers
     ]
     correct = next((answer for answer in answers if answer["correct"]), None)
@@ -272,6 +272,42 @@ def make_group_quiz_snapshot(question: Question) -> tuple[list[dict[str, object]
     random.shuffle(selected)
     correct_option_id = next(index for index, answer in enumerate(selected) if answer["correct"])
     return selected, correct_option_id
+
+
+def group_quiz_poll_content(
+    order_index: int,
+    total: int,
+    question_text: str,
+    options: list[str],
+) -> tuple[str, list[str], str | None]:
+    normalized_question = re.sub(r"\s+", " ", question_text).strip()
+    normalized_options = [re.sub(r"\s+", " ", option).strip() for option in options]
+    regular_question = f"{order_index}/{total}. {normalized_question}"
+    if len(regular_question) <= 300 and all(len(option) <= 100 for option in normalized_options):
+        return regular_question, normalized_options, None
+
+    labels = [chr(ord("A") + index) for index in range(len(normalized_options))]
+    expanded_lines = [regular_question, ""]
+    expanded_lines.extend(f"{label}) {option}" for label, option in zip(labels, normalized_options, strict=True))
+    expanded_question = "\n".join(expanded_lines)
+    if len(expanded_question) <= 300:
+        return expanded_question, labels, None
+
+    poll_question = f"{order_index}/{total}. Yuqoridagi savol uchun to'g'ri javobni tanlang."
+    return poll_question, labels, expanded_question
+
+
+async def send_group_quiz_context(bot_obj: Bot, chat_id: int, text: str) -> None:
+    remaining = text
+    while remaining:
+        if len(remaining) <= 4000:
+            chunk, remaining = remaining, ""
+        else:
+            split_at = remaining.rfind("\n", 0, 4000)
+            if split_at < 1000:
+                split_at = 4000
+            chunk, remaining = remaining[:split_at], remaining[split_at:].lstrip("\n")
+        await bot_obj.send_message(chat_id, chunk, parse_mode=None)
 
 
 def load_group_quiz_test(db, test_id: int) -> Test | None:  # noqa: ANN001
@@ -314,10 +350,18 @@ async def send_group_quiz_question(bot_obj: Bot, session_id: int) -> None:
         return
 
     try:
+        poll_question, poll_options, context_text = group_quiz_poll_content(
+            order_index,
+            total,
+            question_text,
+            options,
+        )
+        if context_text:
+            await send_group_quiz_context(bot_obj, chat_id, context_text)
         poll_message = await bot_obj.send_poll(
             chat_id=chat_id,
-            question=limit_poll_text(f"{order_index}/{total}. {question_text}", 300),
-            options=options,
+            question=poll_question,
+            options=poll_options,
             type="quiz",
             correct_option_id=correct_option_id,
             is_anonymous=False,
@@ -534,13 +578,8 @@ async def send_group_quiz_results(bot_obj: Bot, session_id: int, stopped_early: 
         )
         chat_id = session.chat_id
         title = session.test_name_snapshot
+        total_questions = session.total_questions
         stop_vote_message_id = session.stop_vote_message_id
-        presented = db.scalar(
-            select(func.count(GroupQuizQuestion.id)).where(
-                GroupQuizQuestion.session_id == session_id,
-                GroupQuizQuestion.sent_at.is_not(None),
-            )
-        ) or 0
         last_poll_message_id = last_poll.message_id if last_poll else None
 
     if stop_vote_message_id:
@@ -569,23 +608,23 @@ async def send_group_quiz_results(bot_obj: Bot, session_id: int, stopped_early: 
                 "🛑 Test ovoz bilan to'xtatildi." if stopped_early else "✅ Barcha savollar yakunlandi.",
                 "",
                 "🏆 <b>YAKUNIY LEADERBOARD</b> 🏆",
+                "📝 ishlangan/jami · ✅ to'g'ri · ⏱ vaqt",
                 "",
             ]
             medals = ["🥇", "🥈", "🥉"]
             for index, row in enumerate(leaderboard[:25], start=1):
                 medal = medals[index - 1] if index <= 3 else f"{index}."
                 seconds_total = int(row["seconds"])
-                time_text = f"{seconds_total // 60:02d}:{seconds_total % 60:02d}"
+                time_text = f"{seconds_total // 60}:{seconds_total % 60:02d}"
                 username = row["username"] if isinstance(row["username"], str) else None
                 full_name = row["name"] if isinstance(row["name"], str) else None
-                person = profile_link(int(row["user_id"]), username, full_name)
+                person = profile_link(int(row["user_id"]), username, full_name, max_length=16)
                 lines.append(
-                    f"{medal} {person}\n"
-                    f"   ✅ <b>{row['correct']}/{presented}</b>  ·  ⏱ <b>{time_text}</b>  ·  📝 {row['answered']} ta"
+                    f"{medal} {person} · 📝{row['answered']}/{total_questions} · "
+                    f"✅{row['correct']} · ⏱{time_text}"
                 )
             if len(leaderboard) > 25:
                 lines.append(f"\n👥 Yana {len(leaderboard) - 25} ta ishtirokchi")
-            lines.extend(["", "⚡ Reyting: avval to'g'ri javoblar, keyin tezlik bo'yicha."])
             await bot_obj.send_message(
                 chat_id,
                 "\n".join(lines),
